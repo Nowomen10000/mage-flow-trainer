@@ -116,6 +116,19 @@ def test_failed_cache_or_stop_cancels_later_training(queue_gui, stop):
     assert gui.run_queue.start_btn.isEnabled()
 
 
+def test_failed_toolchain_preflight_skips_cache_and_training(queue_gui, monkeypatch):
+    from trainer.gui.process import Job, Launch
+    gui, _, qapp = queue_gui
+    monkeypatch.setattr(gui_module, "toolchain_jobs", lambda path: [
+        Job(Launch(["python", "preflight", str(path)], "check Windows build tools", is_training=False))])
+    gui._start_queue()
+    assert gui.runner.launch.label == "check Windows build tools"
+    gui.runner.complete(1)
+    qapp.processEvents()
+    assert len(FakeRunner.instances) == 1
+    assert not gui._queue and not gui._batch_queue_active
+
+
 def test_all_configs_validated_before_launch(queue_gui):
     gui, paths, _ = queue_gui
     paths[1].write_text('[train]\nwrong_key=3\n')

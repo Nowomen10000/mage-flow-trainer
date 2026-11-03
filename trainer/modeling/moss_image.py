@@ -247,6 +247,7 @@ class MOSSImage(nn.Module):
         activation_offload_budget_mb=1024,
         activation_offload_pin_memory=False,
         activation_offload_prefetch=False,
+        moss_checkpoint_inside_compile=False,
     ):
         configure_activation_offload(
             self, enabled=activation_offload, budget_mb=activation_offload_budget_mb,
@@ -262,7 +263,9 @@ class MOSSImage(nn.Module):
             )
         self.checkpointing = gradient_checkpointing
         self.attention_backend = attention_backend
-        self._compiled_main_blocks = compile_mode is not None
+        # Default: checkpoint the compiled block from eager code. Keeping the
+        # recomputation boundary outside AOTAutograd reduces backward peak VRAM.
+        self._compiled_main_blocks = compile_mode is not None and moss_checkpoint_inside_compile
         compile_options = None
         if compile_mode is not None:
             compile_options = dict(torch._inductor.list_mode_options(compile_mode))
@@ -274,7 +277,8 @@ class MOSSImage(nn.Module):
             _Block.forward
             if compile_mode is None
             else torch.compile(
-                _checkpointed_block_forward if gradient_checkpointing else _Block.forward,
+                _checkpointed_block_forward
+                if gradient_checkpointing and moss_checkpoint_inside_compile else _Block.forward,
                 options=compile_options, dynamic=compile_dynamic
             )
         )

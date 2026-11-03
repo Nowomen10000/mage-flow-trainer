@@ -77,6 +77,13 @@ def train_launch(config_path: str | Path, num_processes: int = 1, gpus: str = ""
     return Launch(argv, label)
 
 
+def toolchain_jobs(config_path):
+    if sys.platform != "win32":
+        return []
+    return [Job(Launch([_python(), "-u", "-m", "trainer.tools.windows_toolchain", str(config_path)],
+                       "check Windows build tools", is_training=False))]
+
+
 def cache_launch(
     dataset_path: str,
     model_path: str,

@@ -85,9 +85,9 @@ SPEC: dict[str, Spec] = {
     "train.offload_text_encoder": _spec("Offload text encoder", "Move the live encoder to GPU for caption encoding and back to CPU before transformer execution. Trades transfers for lower GPU residency.", lambda: F.BoolEditor("Offload text encoder"), inline_label=True),
     "train.compile_text_encoder": _spec("Compile Loaded Text Encoder", "Compile Qwen3 decoder blocks with dynamic shapes. Independent of transformer compilation and SDNQ. First encoding includes compilation; disable text encoder quantization for BF16.", lambda: F.BoolEditor("Compile Loaded Text Encoder"), inline_label=True),
     "train.text_encoder_embedding_only": _spec("Loaded Text Encoder: embedding-only output", "Skip unused logits and intermediate hidden states. Checks equivalence to the original output on the first batch; disabled for Cached Text Encoder.", lambda: F.BoolEditor("Loaded Text Encoder: embedding-only output"), inline_label=True),
-    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires varlen attention, integer batch size, no curriculum or OT.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
+    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires packed attention, integer batch size, no curriculum or OT. Temporarily disabled on Windows; ordinary multi-resolution buckets remain supported.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
     "train.checkpoint_blocks": _spec("Checkpoint blocks", "Zero-based block indices; blank checkpoints all blocks.", lambda: F.IntListEditor("e.g. 0, 2, 4")),
-    "train.attention_backend": _spec("Attention backend", "torch_varlen uses PyTorch's built-in packed attention. SDPA uses padded attention.", lambda: F.ChoiceEditor(["sdpa", "torch_varlen", "flash_attn_2", "flash_attn_3"])),
+    "train.attention_backend": _spec("Attention backend", "torch_varlen uses PyTorch's built-in packed attention and requires working GPU kernels. Temporarily disabled on Windows; use SDPA. MOSS/Flux3 SDPA processes packed samples separately; Mage uses padded attention.", lambda: F.ChoiceEditor(["sdpa", "torch_varlen", "flash_attn_2", "flash_attn_3"])),
     "train.max_text_tokens": _spec("Maximum text tokens", "Caption token budget after removing the Qwen3-VL system prefix.", lambda: F.IntEditor(1, 4096)),
     # ------------------------------------------------------------------ train
     "train.moss_qkv_format": _spec(
@@ -249,6 +249,13 @@ SPEC: dict[str, Spec] = {
         "Compile the repeated block once instead of the whole 28-block trunk. Without it, "
         "full-model compile ran 25+ minutes here without completing a single step.",
         lambda: F.BoolEditor("Compile the repeated block, not the whole trunk"), inline_label=True),
+    "train.moss_checkpoint_inside_compile": _spec(
+        "Checkpoint inside compile",
+        "MOSS only. Experimental alternative to the default checkpoint around each compiled block. "
+        "Can change speed and numerical results, but used about 1.35 GB more peak VRAM in our "
+        "1024px batch-7 test. Requires compilation and gradient checkpointing to take effect. "
+        "The corrected RMSNorm is used by both boundaries.",
+        lambda: F.BoolEditor("Use experimental inside-compile checkpointing"), inline_label=True),
 
     # ------------------------------------------------------------------ dataset
     "dataset.path": _spec(
@@ -856,6 +863,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
             "flow.hf_scale", "flow.hf_exponent", 'flow.hf_high_noise_snr_cut',
             'flow.hf_high_noise_min_weight', 'flow.hf_high_noise_power',
         ]),
+        ("Experimental MOSS checkpointing", ["train.moss_checkpoint_inside_compile"]),
         ("Experimental RTI", [
             "rti.enabled", "rti.dense_prefix_blocks", "rti.dense_suffix_blocks", "rti.size_buckets",
             "rti.start_keep", "rti.target_keep", "rti.identity_steps", "rti.warmup_steps",

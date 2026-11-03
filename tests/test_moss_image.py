@@ -145,7 +145,8 @@ def test_compile_keeps_mode_options_with_safe_reductions(monkeypatch, mode):
 
 
 @pytest.mark.parametrize("checkpointing", [True, False])
-def test_compiled_checkpoint_matches_eager_training_and_eval(monkeypatch, checkpointing):
+@pytest.mark.parametrize("inside_compile", [False, True])
+def test_compiled_checkpoint_matches_eager_training_and_eval(monkeypatch, checkpointing, inside_compile):
     # Exercise the captured checkpoint operation with AOTAutograd on CPU;
     # full-size BF16/Inductor parity is covered by the GPU replay benchmark.
     real_compile = torch.compile
@@ -160,7 +161,8 @@ def test_compiled_checkpoint_matches_eager_training_and_eval(monkeypatch, checkp
     sum(y.square().mean() for y in expected).backward()
     gradients = {n: p.grad.clone() for n, p in model.named_parameters()}
     model.zero_grad(set_to_none=True)
-    model.configure_execution(checkpointing, compile_mode="default")
+    model.configure_execution(checkpointing, compile_mode="default",
+                              moss_checkpoint_inside_compile=inside_compile)
     actual = model(xs, t, (text, mask))[0]
     sum(y.square().mean() for y in actual).backward()
     for a, b in zip(actual, expected):

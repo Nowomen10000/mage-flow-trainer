@@ -130,6 +130,8 @@ class Trainer:
     def __init__(self, cfg: Config, config_path: str | Path | None = None):
         from .config import validate_model_options
         validate_model_options(cfg)
+        from ..tools.windows_toolchain import prepare_windows_toolchain
+        prepare_windows_toolchain(required=bool(cfg.train.compile or cfg.train.compile_text_encoder))
         require_cuda()
         self.cfg = cfg
         self.config_path = Path(config_path) if config_path else None
@@ -166,6 +168,10 @@ class Trainer:
         if (cfg.quant.mode == "training" or cfg.quant.backend == "convrot" or cfg.quant.frozen_matmul) and self.accelerator.num_processes > 1:
             from .distributed import configure_quantized_ddp
             self.accelerator.ddp_handler = configure_quantized_ddp()
+        from .distributed import configure_moss_checkpoint_ddp
+        configure_moss_checkpoint_ddp(cfg.train, self.accelerator.num_processes)
+        from .attention_check import check_attention_backend
+        check_attention_backend(cfg.train.attention_backend, self.accelerator.device, self.dtype)
         # Rank-local global RNG still serves dropout and other model operations.
         # DDP synchronizes initial model/adapter weights. Flow draws use separate
         # streams below; stochastic optimizer updates use shared isolated RNG.
@@ -418,7 +424,9 @@ class Trainer:
             activation_offload=cfg.train.activation_offload,
             activation_offload_budget_mb=cfg.train.activation_offload_budget_mb,
             activation_offload_pin_memory=cfg.train.activation_offload_pin_memory,
-            activation_offload_prefetch=cfg.train.activation_offload_prefetch)
+            activation_offload_prefetch=cfg.train.activation_offload_prefetch,
+            **({"moss_checkpoint_inside_compile": cfg.train.moss_checkpoint_inside_compile}
+               if cfg.train.model_family == "moss_image" else {}))
         self.groups = groups
         if cfg.self_flow.enabled:
             from types import MethodType
@@ -1229,6 +1237,10 @@ class Trainer:
         if cfg.train.compile:
             print(f"compile  {cfg.train.compile} (dynamic={cfg.train.compile_dynamic}, "
                   f"regional={cfg.train.compile_regional}); first steps include compile time")
+            if cfg.train.model_family == "moss_image" and cfg.train.gradient_checkpointing:
+                boundary = ("inside compile (experimental)" if cfg.train.moss_checkpoint_inside_compile
+                            else "outside compile (lower VRAM)")
+                print(f"         MOSS checkpoint boundary: {boundary}")
         sched = f"{cfg.schedule.kind}, warmup {cfg.schedule.warmup_steps}, floor {cfg.schedule.min_lr_ratio}"
         if cfg.schedule.kind == "rex":
             sched += f", d={cfg.schedule.d}"

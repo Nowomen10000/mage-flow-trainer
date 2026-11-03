@@ -245,6 +245,8 @@ class TrainConfig:
     # Compile the repeated transformer block once instead of the whole trunk. 28 identical blocks,
     # so this cuts compile time by roughly that factor for nearly all of the benefit.
     compile_regional: bool = True
+    # Experimental alternative to the lower-memory outer checkpoint boundary.
+    moss_checkpoint_inside_compile: bool = False
 
     def __post_init__(self):
         if self.moss_qkv_format not in ("auto", "separated", "fused"):
@@ -253,13 +255,15 @@ class TrainConfig:
             raise ValueError("train.model_family must be auto, mage_flow, flux3 or moss_image")
         if self.compile is False:
             self.compile = None
+        from ..tools.windows_toolchain import validate_windows_attention
+        validate_windows_attention(self.attention_backend, self.pack_resolutions)
         from ..modeling.loader import resolve_model_family
         allows_sdpa_packing = resolve_model_family(self.model_path, self.model_family) in ('flux3', 'moss_image')
         if self.pack_resolutions and ((self.attention_backend == "sdpa" and not allows_sdpa_packing) or type(self.batch_size) is not int or self.batch_size < 1):
             raise ValueError("pack_resolutions requires packed attention and a positive integer batch_size")
         if type(self.text_cache_batch_size) is not int or self.text_cache_batch_size < 1:
             raise ValueError("train.text_cache_batch_size must be a positive integer")
-        for name in ("compile_text_encoder", "text_encoder_embedding_only"):
+        for name in ("compile_text_encoder", "text_encoder_embedding_only", "moss_checkpoint_inside_compile"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"train.{name} must be a boolean")
         if type(self.nonfinite_patience) is not int or self.nonfinite_patience < 1:
@@ -374,6 +378,8 @@ def _build(cls, data: dict, path: str):
 
 
 def validate_model_options(cfg):
+    from ..tools.windows_toolchain import validate_windows_attention
+    validate_windows_attention(cfg.train.attention_backend, cfg.train.pack_resolutions)
     if cfg.train.activation_offload and cfg.self_flow.enabled:
         raise ValueError("Activation offload does not yet support Self-Flow's alternate forward")
     if cfg.paired_texture.scale and (cfg.flow.dual_timestep or cfg.self_flow.enabled
@@ -386,6 +392,8 @@ def validate_model_options(cfg):
         raise ValueError('Eye adversarial experiment requires dedicated eye examples and perceptual.weight=0 (LPIPS off)')
     from ..modeling.loader import resolve_model_family
     cfg.train.model_family = resolve_model_family(cfg.train.model_path, cfg.train.model_family)
+    if cfg.train.moss_checkpoint_inside_compile and cfg.train.model_family != "moss_image":
+        raise ValueError("train.moss_checkpoint_inside_compile requires MOSS-Image")
     if cfg.quant.preset != "custom" and (
             cfg.train.model_family != "moss_image" or not cfg.is_lora
             or cfg.train.dtype != "bfloat16"):

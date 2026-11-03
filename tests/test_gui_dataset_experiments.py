@@ -84,6 +84,52 @@ def test_moss_text_refiner_toggle_roundtrip(gui, tmp_path):
     assert not gui.editors[key].widget.isEnabled()
 
 
+def test_moss_checkpoint_boundary_roundtrip(gui, tmp_path):
+    from trainer.training.config import load_config
+
+    key = "train.moss_checkpoint_inside_compile"
+    assert bridge.defaults()[key] is False
+    gui._apply(bridge.defaults() | {
+        "dataset.path": "/images", "train.model_family": "moss_image",
+        "train.compile": "default", "train.gradient_checkpointing": True,
+        key: True,
+    })
+    assert gui.editors[key].widget.isEnabled()
+    assert gui.tab_bar.isTabVisible(gui.experimental_tab)
+    assert not gui.experimental_chk.isEnabled()
+    path = tmp_path / "checkpoint.toml"
+    bridge.write_toml(path, gui.collect())
+    assert load_config(path).train.moss_checkpoint_inside_compile is True
+    gui._apply(bridge.defaults() | bridge.flatten(bridge.read_toml(path)))
+    assert gui.collect()[key] is True
+    gui._apply(gui.collect() | {key: False, "train.compile": None})
+    assert not gui.editors[key].widget.isEnabled()
+
+
+def test_windows_blocks_packing_and_varlen_with_explicit_repair(gui, monkeypatch):
+    from types import SimpleNamespace
+    from trainer.gui import app as gui_module
+    from trainer.tools import windows_toolchain
+    monkeypatch.setattr(gui_module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(windows_toolchain, "sys", SimpleNamespace(platform="win32"))
+    gui._apply(bridge.defaults() | {
+        "dataset.path": "/images", "train.model_family": "moss_image",
+        "train.attention_backend": "torch_varlen", "train.pack_resolutions": True,
+    })
+    # Keep loaded settings visible, but they cannot start or be newly selected.
+    assert gui.collect()["train.pack_resolutions"] is True
+    assert not gui.start_btn.isEnabled()
+    assert not gui.editors["train.pack_resolutions"].widget.isEnabled()
+    attention = gui.editors["train.attention_backend"]
+    assert not attention.widget.model().item(attention.values.index("torch_varlen")).isEnabled()
+    assert not gui.windows_attention_btn.isHidden()
+    gui.windows_attention_btn.click()
+    assert gui.collect()["train.attention_backend"] == "sdpa"
+    assert gui.collect()["train.pack_resolutions"] is False
+    assert gui.windows_attention_btn.isHidden()
+    assert bridge.validate(gui.collect())[0]
+
+
 def test_moss_sampler_locks_shared_controls_and_roundtrips(gui, tmp_path):
     from trainer.training.config import load_config
     gui._apply(bridge.defaults() | {"dataset.path": "/images", "flow.sigmoid_scale": 3,

@@ -30,7 +30,7 @@ from .timestep_plot import TimestepDistributionWidget
 from .run_queue import RunQueueWidget
 from .preferences import Preferences
 from .process import (Job, ProcessRunner, audit_launch, cache_launch, concat_launch,
-                      train_launch, training_env)
+                      train_launch, training_env, toolchain_jobs)
 from .schema import LAYOUT, SPEC
 from .widgets import (
     DANGER,
@@ -159,6 +159,10 @@ _RULES = {
 
     "train.compile_dynamic": lambda c: bool(c.get("train.compile")),
     "train.compile_regional": lambda c: bool(c.get("train.compile")),
+    "train.pack_resolutions": lambda c: sys.platform != "win32",
+    "train.moss_checkpoint_inside_compile": lambda c: (
+        c.get("train.model_family") in ("auto", "moss_image")
+        and bool(c.get("train.compile")) and bool(c.get("train.gradient_checkpointing"))),
 
     "quant.text_encoder_weights_dtype": lambda c: bool(c.get("quant.quantize_text_encoder")),
     "quant.weights_dtype": lambda c: (c.get("quant.backend", "sdnq") == "sdnq" and c.get("quant.mode") != "none") or c.get("quant.quantize_text_encoder"),
@@ -270,7 +274,8 @@ class TrainingGUI(QtWidgets.QWidget):
 
         self.experimental_chk = QtWidgets.QCheckBox("Enable advanced experimental features")
         self.experimental_chk.setToolTip(
-            "Show Self-Flow, dual timestep, RTI, decoded perceptual and eye adversarial controls. "
+            "Show Self-Flow, dual timestep, RTI, decoded perceptual, eye adversarial and "
+            "MOSS checkpoint-boundary controls. "
             "Individual features remain off until enabled. Active features must be disabled "
             "before hiding their controls."
         )
@@ -440,6 +445,10 @@ class TrainingGUI(QtWidgets.QWidget):
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
+        self.windows_attention_btn = make_btn("Use SDPA and disable native-resolution packing",
+                                             self._use_windows_attention)
+        self.windows_attention_btn.hide()
+        lay.addWidget(self.windows_attention_btn)
 
         # Advisories sit below the status line and above the controls, because several of them are
         # about the GPU checkboxes right underneath -- the two worst traps are only visible once
@@ -880,8 +889,23 @@ class TrainingGUI(QtWidgets.QWidget):
             self._last_adapter_selection = selection
             self._refresh()
 
+    def _use_windows_attention(self):
+        self.editors["train.attention_backend"].set("sdpa")
+        self.editors["train.pack_resolutions"].set(False)
+        self.log("Windows compatibility: selected SDPA and disabled native-resolution packing.")
+        self._refresh()
+
     def _refresh(self):
         flat = self.collect()
+        windows = sys.platform == "win32"
+        attention = self.editors["train.attention_backend"]
+        item = attention.widget.model().item(attention.values.index("torch_varlen"))
+        item.setEnabled(not windows)
+        item.setToolTip("Temporarily disabled on Windows" if windows else "")
+        # Preserve incompatible loaded TOMLs, block Start through validation,
+        # and provide an explicit repair action instead of silently rewriting.
+        self.windows_attention_btn.setVisible(windows and (
+            flat.get("train.attention_backend") == "torch_varlen" or flat.get("train.pack_resolutions")))
         self.timestep_plot.set_config(flat)
         has_subsets = self.editors["dataset.subsets"].table.rowCount() > 0
         for key in ("dataset.path", "dataset.num_repeats"):
@@ -893,6 +917,7 @@ class TrainingGUI(QtWidgets.QWidget):
         active_experiment = any(flat.get(k) for k in (
             "self_flow.enabled", "flow.dual_timestep", "rti.enabled",
             "perceptual.enabled", "adversarial.enabled",
+            "train.moss_checkpoint_inside_compile",
         ))
         if active_experiment:
             self.experimental_chk.setChecked(True)
@@ -1020,7 +1045,7 @@ class TrainingGUI(QtWidgets.QWidget):
         owner = self._queue_destinations.get(destination)
         if owner is not None and owner != entry.id and any(e.id == owner for e in self.run_queue.entries()):
             raise ValueError(f"Duplicate output directory/run_name: {destination}. Give each queued run a distinct name.")
-        steps = self._cache_jobs(flat) + [Job(train_launch(entry.snapshot, self.num_processes()), training=True)]
+        steps = toolchain_jobs(entry.snapshot) + self._cache_jobs(flat) + [Job(train_launch(entry.snapshot, self.num_processes()), training=True)]
         self._queue_destinations[destination] = entry.id
         return [replace(job, config_path=entry.snapshot, config_digest=entry.digest,
                         queue_index=entry.id) for job in steps]
@@ -1168,10 +1193,11 @@ class TrainingGUI(QtWidgets.QWidget):
         # Cache first here too. Same reasoning as the pipeline: an uncached folder is silent, and
         # a warm cache makes this a no-op. A cache step that fails cancels the training, because
         # training past it is exactly the silent-wrong-dataset case.
-        jobs = self._cache_jobs(flat) + [Job(train_launch(path, self.num_processes()),
+        cache_jobs = self._cache_jobs(flat)
+        jobs = toolchain_jobs(path) + cache_jobs + [Job(train_launch(path, self.num_processes()),
                                              training=True)]
-        if len(jobs) > 1:
-            self.log(f"Caching {len(jobs) - 1} dataset folder(s), then training.")
+        if cache_jobs:
+            self.log(f"Caching {len(cache_jobs)} dataset folder(s), then training.")
         self._queue = jobs[1:]
         self._run(jobs[0].launch, jobs[0].training, jobs[0].on_failure)
 
@@ -1271,6 +1297,8 @@ class TrainingGUI(QtWidgets.QWidget):
             cfg = self._arm_config(flat, suffix, init, preserve)
             if cfg is None:
                 return
+            if not parents:
+                jobs[0:0] = toolchain_jobs(cfg)
             jobs.append(Job(train_launch(cfg, self.num_processes()), training=True))
             name = f"{base}-{suffix}"
             parents.append((str(out_dir / name / f"{name}.safetensors"), 1.0))

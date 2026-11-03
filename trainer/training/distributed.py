@@ -22,6 +22,16 @@ def configure_quantized_ddp():
     return QuantizedDDPKwargs(find_unused_parameters=True, gradient_as_bucket_view=True)
 
 
+def configure_moss_checkpoint_ddp(train, world_size):
+    if (world_size > 1 and train.model_family == "moss_image"
+            and train.compile and train.gradient_checkpointing
+            and not train.moss_checkpoint_inside_compile):
+        # DDPOptimizer's bucket partitions can save a different set of tensors
+        # during eager checkpoint recomputation. Compile each block as a whole;
+        # ordinary DDP initialization and gradient synchronization stay enabled.
+        torch._dynamo.config.optimize_ddp = False
+
+
 def model_storage(module):
     """Yield ordinary storage/scales, never SDNQ or Kitchen tensor wrappers."""
     from sdnq.training import SDNQTensor
