@@ -41,6 +41,9 @@ class FakeRunner(QtCore.QObject):
 
 @pytest.fixture
 def queue_gui(monkeypatch, tmp_path):
+    # Generic queue cases use cache/train pairs on every OS. The dedicated
+    # preflight test below supplies its own Windows job explicitly.
+    monkeypatch.setattr(gui_module, "toolchain_jobs", lambda path: [])
     qapp = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     monkeypatch.setattr(TrainingGUI, "_load_presets", lambda self, **kwargs: None)
     monkeypatch.setattr(gui_module, "ProcessRunner", FakeRunner)
@@ -396,3 +399,16 @@ def test_live_duplicate_output_is_rejected(queue_gui, tmp_path, keep_going):
     else:
         assert gui.runner is None and not gui._batch_queue_active
         assert queue.entries()[3].status == 'Skipped'
+
+@pytest.mark.parametrize('approve', [False, True])
+def test_english_pack_repair_requires_confirmation(queue_gui, monkeypatch, approve):
+    gui, paths, qapp = queue_gui
+    buttons = QtWidgets.QMessageBox.StandardButton
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'question', lambda *a: buttons.Yes if approve else buttons.No)
+    gui._install_cpp_english()
+    assert len(FakeRunner.instances) == int(approve)
+    if approve:
+        launch = FakeRunner.instances[0].launch
+        assert '--install-english' in launch.argv
+        assert not launch.is_training
+        assert not gui._running_training

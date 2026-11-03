@@ -1,7 +1,8 @@
 """Activate an installed x64 MSVC environment for this process and its children.
 
-Uses Microsoft's installer discovery; never installs software or edits the
-system PATH. Kept independent of Torch/Qt so GUI jobs can check before caching.
+Uses Microsoft's installer discovery without editing the system PATH. Compile
+preflight offers missing English resources through the elevated VS installer.
+Kept independent of Torch/Qt so GUI jobs can check before caching.
 """
 
 import argparse
@@ -22,6 +23,82 @@ INSTALL_HELP = (
     "Then restart the trainer; it will load the environment automatically. "
     "If discovery still fails, launch from 'x64 Native Tools Command Prompt'."
 )
+
+ENGLISH_HELP = (
+    "MSVC English compiler resources are missing. torch.compile requires the English "
+    "language pack even when Windows/Visual Studio uses another language. "
+    "Use 'Install English C++ language pack' in the trainer, or run "
+    "python -m trainer.tools.windows_toolchain --install-english. "
+    "Alternatively: Visual Studio Installer > Modify > Language packs > English."
+)
+
+
+def check_windows_cpp_language(*, install_missing=False):
+    """Select English compiler diagnostics without changing the user's UI language.
+
+    Inspect files rather than decoding localized cl /help output: that decoding is
+    itself the failure in PyTorch on some Windows code pages.
+    """
+    if sys.platform != "win32":
+        return
+    compiler = shutil.which(os.environ.get("CXX", "cl.exe"))
+    if not compiler:
+        raise RuntimeError(INSTALL_HELP)
+    if Path(compiler).name.lower() not in ("cl", "cl.exe"):
+        return  # Do not impose MSVC requirements on an explicitly selected compiler.
+    if not (Path(compiler).parent / "1033" / "clui.dll").is_file():
+        if install_missing:
+            print("MSVC English compiler resources are missing; starting Visual Studio Installer before training.", flush=True)
+            install_windows_cpp_english()
+            return
+        raise RuntimeError(ENGLISH_HELP + f" Selected compiler: {compiler}")
+    os.environ["VSLANG"] = "1033"
+    print("MSVC English compiler resources selected (VSLANG=1033).", flush=True)
+
+
+def install_windows_cpp_english():
+    """Repair missing resources; Windows owns elevation/consent and installation UI."""
+    if sys.platform != "win32":
+        raise RuntimeError("The MSVC language pack installer is Windows-only.")
+    prepare_windows_toolchain(required=True)
+    compiler = shutil.which(os.environ.get("CXX", "cl.exe"))
+    if not compiler or Path(compiler).name.lower() not in ("cl", "cl.exe"):
+        raise RuntimeError("Select an installed MSVC compiler before installing its language pack.")
+    installation = next((p for p in Path(compiler).parents
+                         if (p / "Common7/Tools/VsDevCmd.bat").is_file()), None)
+    if installation is None:
+        raise RuntimeError("Cannot locate the Visual Studio installation owning this compiler. " + ENGLISH_HELP)
+    if (Path(compiler).parent / "1033/clui.dll").is_file():
+        check_windows_cpp_language()
+        print("English compiler resources are already installed.", flush=True)
+        return
+    installer = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio/Installer/setup.exe"
+    if not installer.is_file():
+        raise RuntimeError("Visual Studio Installer was not found. " + ENGLISH_HELP)
+    env = dict(os.environ)
+    env["BLUFLOW_VS_INSTALLER"] = str(installer)
+    env["BLUFLOW_VS_ARGUMENTS"] = subprocess.list2cmdline([
+        "modify", "--installPath", str(installation), "--addProductLang", "en-US",
+        "--passive", "--norestart"])
+    # Paths travel as environment data, never interpolated PowerShell source.
+    command = ("$ErrorActionPreference='Stop'; "
+               "$p=Start-Process -FilePath $env:BLUFLOW_VS_INSTALLER "
+               "-ArgumentList $env:BLUFLOW_VS_ARGUMENTS -Verb RunAs "
+               "-WindowStyle Hidden -PassThru -Wait; exit $p.ExitCode")
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    print(f"Adding English compiler resources to {installation}. Approve the Windows administrator prompt.", flush=True)
+    result = subprocess.run([str(powershell), "-NoProfile", "-Command", command], env=env)
+    if result.returncode == 3010:
+        raise RuntimeError("English language pack installed; Windows requests a restart. Restart before training.")
+    if result.returncode:
+        raise RuntimeError(f"Visual Studio language pack installation failed/cancelled (exit {result.returncode}). " + ENGLISH_HELP)
+    # A modification can also service the toolset. Refresh paths after installation.
+    for script in _find_scripts(os.environ):
+        if script == installation / "Common7/Tools/VsDevCmd.bat":
+            os.environ.update(_capture_environment(script, os.environ))
+            break
+    check_windows_cpp_language()
+    print("English language pack installed; compiler resources are ready.", flush=True)
 
 
 def configure_windows_triton_compiler():
@@ -183,16 +260,29 @@ def prepare_windows_toolchain(*, required=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", type=Path)
+    parser.add_argument("config", type=Path, nargs="?")
+    parser.add_argument("--install-english", action="store_true",
+                        help="add the English MSVC language pack using Visual Studio Installer (administrator approval)")
     args = parser.parse_args()
+    if args.install_english:
+        try:
+            install_windows_cpp_english()
+        except (RuntimeError, OSError) as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
+        return 0
+    if args.config is None:
+        parser.error("provide a config, or --install-english")
     with args.config.open("rb") as stream:
         train = tomllib.load(stream).get("train", {})
     required = bool(train.get("compile") or train.get("compile_text_encoder"))
     try:
         validate_windows_attention(train.get("attention_backend", "sdpa"), train.get("pack_resolutions", False))
         prepare_windows_toolchain(required=required)
+        if required:
+            check_windows_cpp_language(install_missing=True)
         check_windows_triton_compiler()
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr, flush=True)
         return 1
     print("Windows training environment check passed.", flush=True)

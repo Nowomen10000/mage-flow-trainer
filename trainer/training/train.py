@@ -135,8 +135,10 @@ class Trainer:
     def __init__(self, cfg: Config, config_path: str | Path | None = None):
         from .config import validate_model_options
         validate_model_options(cfg)
-        from ..tools.windows_toolchain import prepare_windows_toolchain, check_windows_triton_compiler
+        from ..tools.windows_toolchain import prepare_windows_toolchain, check_windows_triton_compiler, check_windows_cpp_language
         prepare_windows_toolchain(required=bool(cfg.train.compile or cfg.train.compile_text_encoder))
+        if cfg.train.compile or cfg.train.compile_text_encoder:
+            check_windows_cpp_language(install_missing=True)
         check_windows_triton_compiler()
         require_cuda()
         self.cfg = cfg

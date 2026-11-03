@@ -190,6 +190,24 @@ launcher compiler and Python development files before starting expensive work;
 this does not certify GPU kernel support. If a custom `CC` selects an older
 MSVC and fails this check, unset it or update that toolset.
 
+Localized Visual Studio installations also need the **English language pack**
+for PyTorch's C++ compiler detection. Preflight checks for these resources before
+caching or model loading. When they are missing, it starts Visual Studio Installer
+to add English and verifies the installation before continuing. When present,
+it selects English compiler messages and proceeds normally. This check applies
+to every language; your Windows and Visual Studio UI languages stay unchanged.
+You can also repair ahead of time with **Install English C++ language pack** in
+the trainer, or run:
+
+```bat
+venv\Scripts\python.exe -m trainer.tools.windows_toolchain --install-english
+```
+
+The repair opens the installed Visual Studio Installer for the selected
+compiler's installation and requests administrator approval. It adds English
+resources without removing other languages. If installation is cancelled or
+requires a reboot, resolve that before starting training again.
+
 If the tools are missing, install Visual Studio Build Tools with **Desktop
 development with C++**, including **MSVC x64/x86 tools** and a **Windows 10/11
 SDK**, then restart the trainer. The full Visual Studio IDE is unnecessary.

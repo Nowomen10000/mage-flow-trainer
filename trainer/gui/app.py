@@ -29,7 +29,7 @@ from .metrics import LiveMetricsWidget
 from .timestep_plot import TimestepDistributionWidget
 from .run_queue import RunQueueWidget
 from .preferences import Preferences
-from .process import (Job, ProcessRunner, audit_launch, cache_launch, concat_launch,
+from .process import (Job, Launch, ProcessRunner, audit_launch, cache_launch, concat_launch,
                       train_launch, training_env, toolchain_jobs, calibration_launch)
 from .schema import LAYOUT, SPEC
 from .widgets import (
@@ -456,6 +456,8 @@ class TrainingGUI(QtWidgets.QWidget):
                                              self._use_windows_attention)
         self.windows_attention_btn.hide()
         lay.addWidget(self.windows_attention_btn)
+        if sys.platform == "win32":
+            lay.addWidget(make_btn("Install English C++ language pack", self._install_cpp_english))
 
         # Advisories sit below the status line and above the controls, because several of them are
         # about the GPU checkboxes right underneath -- the two worst traps are only visible once
@@ -982,6 +984,24 @@ class TrainingGUI(QtWidgets.QWidget):
         self.advice.setVisible(bool(notes))
 
     # ---------------------------------------------------------------- running
+
+    def _install_cpp_english(self):
+        if self.runner is not None and self.runner.isRunning():
+            self.log("Stop the current job before modifying Visual Studio.")
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Install compiler language pack",
+            "Add English compiler resources to the selected Visual Studio installation? "
+            "This fixes torch.compile on localized Windows installations. "
+            "Visual Studio Installer may download files and request administrator approval. "
+            "Your Windows language will not change.",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._run(Launch([sys.executable, "-u", "-m", "trainer.tools.windows_toolchain",
+                          "--install-english"], "install English C++ language pack",
+                         is_training=False), training=False)
 
     def log(self, text, replace_last=False):
         self.console.append_line(text, replace_last=replace_last)

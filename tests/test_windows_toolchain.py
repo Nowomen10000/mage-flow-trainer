@@ -9,6 +9,100 @@ import pytest
 from trainer.tools import windows_toolchain as tools
 
 
+@pytest.mark.parametrize("language", ["3082", "1041", "2052"])
+def test_localized_compiler_requires_english_without_decoding_output(monkeypatch, tmp_path, language):
+    compiler = tmp_path / "cl.exe"
+    compiler.touch()
+    (tmp_path / language).mkdir()
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools.shutil, "which", lambda name: str(compiler))
+    monkeypatch.setattr(tools.subprocess, "run", lambda *a, **k: pytest.fail("must not decode cl output"))
+    with pytest.raises(RuntimeError, match="--install-english"):
+        tools.check_windows_cpp_language()
+    (tmp_path / "1033").mkdir()
+    (tmp_path / "1033/clui.dll").touch()
+    monkeypatch.setattr(tools.os, "environ", {"VSLANG": language})
+    tools.check_windows_cpp_language()
+    assert tools.os.environ["VSLANG"] == "1033"
+
+
+def test_cpp_language_does_not_touch_linux_or_custom_compiler(monkeypatch):
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(tools.shutil, "which", lambda name: pytest.fail("Linux discovery"))
+    tools.check_windows_cpp_language()
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools.shutil, "which", lambda name: "D:/tools/clang-cl.exe")
+    tools.check_windows_cpp_language()
+
+
+def test_compile_preflight_installs_missing_english_only_once(monkeypatch, tmp_path):
+    compiler = tmp_path / "cl.exe"
+    compiler.touch()
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools.shutil, "which", lambda name: str(compiler))
+    monkeypatch.setattr(tools.os, "environ", {})
+    installs = []
+    def install():
+        installs.append(True)
+        (tmp_path / "1033").mkdir()
+        (tmp_path / "1033/clui.dll").touch()
+        tools.check_windows_cpp_language()
+    monkeypatch.setattr(tools, "install_windows_cpp_english", install)
+    tools.check_windows_cpp_language(install_missing=True)
+    tools.check_windows_cpp_language(install_missing=True)
+    assert installs == [True]
+    assert tools.os.environ["VSLANG"] == "1033"
+
+
+def test_failed_auto_install_stops_preflight_before_triton(monkeypatch, tmp_path):
+    config = tmp_path / "run.toml"
+    config.write_text('[train]\ncompile="default"\n')
+    monkeypatch.setattr(tools.sys, "argv", ["toolchain", str(config)])
+    monkeypatch.setattr(tools, "prepare_windows_toolchain", lambda **kw: True)
+    def check(*, install_missing):
+        assert install_missing
+        raise RuntimeError("Installation cancelled")
+    monkeypatch.setattr(tools, "check_windows_cpp_language", check)
+    monkeypatch.setattr(tools, "check_windows_triton_compiler", lambda: pytest.fail("must stop"))
+    assert tools.main() == 1
+
+
+@pytest.mark.parametrize("exit_code", [0, 3010, 1])
+def test_english_installer_targets_selected_vs_and_checks_outcome(monkeypatch, tmp_path, exit_code):
+    installation = tmp_path / "VS 日本 & tools"
+    compiler = installation / "VC/Tools/MSVC/version/bin/Hostx64/x64/cl.exe"
+    compiler.parent.mkdir(parents=True)
+    compiler.touch()
+    script = installation / "Common7/Tools/VsDevCmd.bat"
+    script.parent.mkdir(parents=True)
+    script.touch()
+    installer = tmp_path / "Microsoft Visual Studio/Installer/setup.exe"
+    installer.parent.mkdir(parents=True)
+    installer.touch()
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools.os, "environ", {"ProgramFiles(x86)": str(tmp_path)})
+    monkeypatch.setattr(tools.shutil, "which", lambda name: str(compiler))
+    monkeypatch.setattr(tools, "prepare_windows_toolchain", lambda **kw: True)
+    monkeypatch.setattr(tools, "_find_scripts", lambda env: [])
+    def run(args, **kwargs):
+        assert str(installation) not in args[-1]  # paths are data, not PowerShell code
+        assert "-Verb RunAs" in args[-1] and "-Wait" in args[-1]
+        assert kwargs["env"]["BLUFLOW_VS_INSTALLER"] == str(installer)
+        assert "--addProductLang en-US" in kwargs["env"]["BLUFLOW_VS_ARGUMENTS"]
+        assert str(installation) in kwargs["env"]["BLUFLOW_VS_ARGUMENTS"]
+        if exit_code == 0:
+            (compiler.parent / "1033").mkdir()
+            (compiler.parent / "1033/clui.dll").touch()
+        return subprocess.CompletedProcess(args, exit_code)
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    if exit_code:
+        with pytest.raises(RuntimeError, match="restart" if exit_code == 3010 else "failed/cancelled"):
+            tools.install_windows_cpp_english()
+    else:
+        tools.install_windows_cpp_english()
+        assert tools.os.environ["VSLANG"] == "1033"
+
+
 def test_non_windows_does_no_discovery(monkeypatch):
     monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(tools, "_find_scripts", lambda env: pytest.fail("unexpected discovery"))
@@ -67,6 +161,7 @@ def test_c_probe_reproduces_launcher_syntax_and_reports_selected_compiler(monkey
 
 
 def test_active_environment_is_preserved(monkeypatch):
+    monkeypatch.setattr(tools, "configure_windows_triton_compiler", lambda: None)
     monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(tools, "_ready", lambda env: True)
     monkeypatch.setattr(tools, "_find_scripts", lambda env: pytest.fail("already configured"))
@@ -121,6 +216,7 @@ def test_capture_uses_quoted_script_and_unicode_environment(monkeypatch):
 
 
 def test_activation_tries_older_install_and_only_applies_valid_environment(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools, "configure_windows_triton_compiler", lambda: None)
     monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
     scripts = [tmp_path / "broken.bat", tmp_path / "working.bat"]
     for p in scripts:
@@ -138,6 +234,7 @@ def test_activation_tries_older_install_and_only_applies_valid_environment(monke
 
 
 def test_missing_tools_fail_clearly_only_when_required(monkeypatch):
+    monkeypatch.setattr(tools, "configure_windows_triton_compiler", lambda: None)
     monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(tools, "_ready", lambda env: False)
     monkeypatch.setattr(tools, "_find_scripts", lambda env: [])
