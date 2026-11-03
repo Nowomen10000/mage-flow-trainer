@@ -119,6 +119,25 @@ Comfy INT8/ConvRot, but dequantizes them during loading. Enable the trainer's
 text-encoder quantization separately to reduce resident encoder memory.
 See [supported loaders and formats](docs/moss-image-experimental.md#start).
 
+## Continuing an adapter and SinkGD
+
+A finished LoRA/LoCon can start a new training phase without optimizer-state
+files. In **Checkpoints**, set **Resume from** to the adapter `.safetensors`,
+choose **Weights only (new phase)**, and use a new run name. Match the original
+base, adapter rank, alpha, algorithm and targets. Native separated and BluFlow's
+fused MOSS exports are supported. The adapter is loaded directly; the base stays
+unchanged, and the new optimizer, schedule and counters start fresh.
+
+CLI/TOML: `train.resume_mode="weights"` with `train.resume_from` set to the file.
+The default remains `"exact"` for full saved-state resume.
+
+**SinkGD** is also available in the optimizer selector (`optimizer.kind="sinkgd"`).
+This standalone SDNQ-based variant defaults to five Sinkhorn passes, zero weight
+decay and no momentum. It supports BF16/SDNQ master-weight updates and optional
+Kahan compensation. It differs from Advanced Optimizers' `SinkSGD_adv` and does
+not require that package. Its image quality and best LR still need evaluation.
+See the [training guide](docs/training-guide.md#optimizer-families) for settings.
+
 ## MOSS checkpointing and Windows attention
 
 MOSS defaults to checkpointing **around each compiled block**, which reduced
@@ -202,6 +221,28 @@ All three produced usable, closely matched LoRAs in our MOSS tests. **These name
 are not a proven visual-quality ranking**; results can vary by dataset. Standard
 retains BF16 matmul. Balanced/Fast also quantize matmul inputs and the frozen
 base's input-gradient computation; adapters and attention remain BF16.
+
+Balanced/Fast default to **INT8 kernel calibration → Auto (calibrate once)**. Before
+loading models, the trainer validates and benchmarks SDNQ kernel tiles for MOSS
+forward/backward projections on each selected GPU, then saves a local profile.
+DDP calibrates ranks sequentially. Later launches reuse matching profiles; changing
+token counts selects a nearby measured tile instead of retuning 18 candidates.
+New shapes can still incur JIT compilation. This selects kernel launch settings;
+it does not change your quantization preset, batch size, or learning rate.
+
+First calibration can take several minutes. Use **Quantization → Calibrate INT8
+kernels** to refresh results while the selected GPUs are idle, or run:
+
+```bash
+python -m trainer.tools.calibrate_int8 configs/my-run.toml --all-devices --force
+```
+
+`quant.matmul_tuning = "cached"` uses existing profiles without benchmarking;
+`"off"` retains the previous kernel selection. Without a profile, Ada uses the
+measured `128×128×128` tile and other architectures retain SDNQ's normal path.
+Explicit `SDNQ_TRITON_MM_*` overrides take precedence. Profiles are invalidated
+by GPU/software/kernel changes. See [calibration details](docs/training-guide.md#int8-kernel-calibration).
+Standard, full finetuning, and text-encoder quantization are unaffected.
 
 On an RTX 4090, a matched 1024px Tangobat LoCon test (rank/alpha 16, batch 1,
 accumulation 2, cached text, checkpointing and compile) averaged **3.152 / 2.590 /

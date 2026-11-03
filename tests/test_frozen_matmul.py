@@ -51,6 +51,47 @@ def test_legacy_settings_unchanged():
 GPU = pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS')!='1', reason='GPU opt-in')
 
 
+def test_fixed_ada_tile_respects_backend_and_user_overrides(monkeypatch):
+    from sdnq import kernel_wrappers
+    from trainer.training import frozen_matmul as f
+    monkeypatch.setattr(f, '_is_ada', lambda device: True)
+    monkeypatch.setattr(kernel_wrappers, 'use_triton_scaled_mm', True)
+    for key in list(os.environ):
+        if key.startswith('SDNQ_TRITON_MM_'):
+            monkeypatch.delenv(key)
+    assert f.uses_fixed_ada_tile(torch.device('cuda:0'))
+    monkeypatch.setenv('SDNQ_TRITON_MM_BLOCK_SIZE_K_LIST', '64')
+    assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
+    monkeypatch.delenv('SDNQ_TRITON_MM_BLOCK_SIZE_K_LIST')
+    monkeypatch.setattr(kernel_wrappers, 'use_triton_scaled_mm', False)
+    assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
+    monkeypatch.setattr(kernel_wrappers, 'use_triton_scaled_mm', True)
+    monkeypatch.setattr(f, '_is_ada', lambda device: False)
+    assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
+
+
+@GPU
+@pytest.mark.parametrize('m,k,n,transposed', [
+    (97, 256, 512, True), (513, 3072, 3072, True),
+    (769, 3072, 16384, True), (1025, 8192, 3072, True),
+    (513, 16384, 3072, False)])
+def test_fixed_ada_gemm_matches_sdnq_without_autotuning(monkeypatch, m, k, n, transposed):
+    from sdnq.kernels.triton_scaled_mm import sdnq_scaled_mm, sdnq_scaled_mm_kernel
+    from trainer.training import frozen_matmul as f
+    if not f._is_ada(torch.device('cuda:0')):
+        pytest.skip('Ada-specific launch configuration')
+    a = torch.randint(-127, 128, (m, k), device='cuda', dtype=torch.int8)
+    b = torch.randint(-127, 128, (n, k) if transposed else (k, n), device='cuda', dtype=torch.int8)
+    if transposed:
+        b = b.T
+    sa = torch.rand(m, 1, device='cuda') * .01
+    sb = torch.rand(1, n, device='cuda') * .01
+    reference = sdnq_scaled_mm(a, b, sa, sb, out_dtype=torch.bfloat16)
+    monkeypatch.setattr(sdnq_scaled_mm_kernel, 'run', lambda *a, **kw: pytest.fail('autotuner called'))
+    result = f._ada_scaled_mm(a, b, sa, sb, torch.bfloat16)
+    assert torch.equal(result, reference)
+
+
 @GPU
 @pytest.mark.parametrize('rotation',[False,True])
 def test_native_parity_compile_moves_and_state(rotation):
@@ -87,11 +128,21 @@ def test_native_parity_compile_moves_and_state(rotation):
 
 @GPU
 @pytest.mark.parametrize('preset',['balanced','fast'])
-def test_moss_adapter_checkpointed_training(preset):
+@pytest.mark.parametrize('calibrated', [False, True])
+def test_moss_adapter_checkpointed_training(preset, calibrated, tmp_path, monkeypatch):
     from trainer.modeling.moss_image import MOSSImage,MOSSParams
     from trainer.training.params import AdapterConfig,apply_adapter
     from trainer.training.lycoris import lycoris_state_dict,load_lycoris_state_dict
     torch.set_num_threads(2);torch.manual_seed(42)
+    if calibrated:
+        from trainer.training import int8_calibration as c, frozen_matmul as f
+        tile = dict(BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=128, GROUP_SIZE_M=8, num_warps=4, num_stages=2)
+        monkeypatch.setattr(c, 'candidate_tiles', lambda: [tile])
+        monkeypatch.setattr(c, '_ACTIVE', {})
+        c.prepare(torch.device('cuda:0'), [(256,256,False), (1024,256,False), (256,512,False),
+                  (256,1024,False), (512,256,False)], tokens=(32,96), root=tmp_path)
+        monkeypatch.setattr(f, 'int_scaled_mm_func', lambda *a, **kw: pytest.fail(f'unprofiled projection A={a[0].shape} B={a[1].shape} contiguous={a[1].is_contiguous()}'))
+        monkeypatch.setattr(f, 'uses_fixed_ada_tile', lambda device: False)
     m=MOSSImage(MOSSParams(dim=256,ffn_dim=512,num_heads=4,num_layers=4,text_dim=128,latent_channels=8)).bfloat16()
     m=quantize_module(m,QuantConfig(preset=preset),torch.device('cuda'),torch.bfloat16,True)
     assert quantized_layer_report(m)[0]>0
@@ -117,7 +168,8 @@ def test_moss_adapter_checkpointed_training(preset):
 
 @pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS')!='1' or os.environ.get('WORLD_SIZE')!='2',
                     reason='requires two GPU ranks')
-def test_frozen_matmul_ddp_buffers_and_updates():
+@pytest.mark.parametrize('calibrated', [False, True])
+def test_frozen_matmul_ddp_buffers_and_updates(calibrated, tmp_path, monkeypatch):
     import torch.distributed as dist
     from trainer.training.distributed import configure_quantized_ddp, sync_quantized_model, model_storage
 
@@ -134,6 +186,19 @@ def test_frozen_matmul_ddp_buffers_and_updates():
     device=torch.device('cuda',rank);torch.set_num_threads(2)
     dist.init_process_group('nccl')
     try:
+        if calibrated:
+            from trainer.training import int8_calibration as c, frozen_matmul as f
+            tile = dict(BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=128, GROUP_SIZE_M=8, num_warps=4, num_stages=2)
+            monkeypatch.setattr(c, 'candidate_tiles', lambda: [tile])
+            monkeypatch.setattr(c, '_ACTIVE', {})
+            monkeypatch.setattr(c, 'moss_shapes', lambda path: [(256,256,False), (256,256,True)])
+            prepare = c.prepare
+            monkeypatch.setattr(c, 'prepare', lambda device, shapes, **kw:
+                                prepare(device, shapes, tokens=(32,96), root=tmp_path, **kw))
+            cfg = SimpleNamespace(quant=QuantConfig(preset='fast'), train=SimpleNamespace(model_path='unused'))
+            c.prepare_training(cfg, SimpleNamespace(num_processes=2, process_index=rank, device=device))
+            monkeypatch.setattr(f, 'int_scaled_mm_func', lambda *a, **kw: pytest.fail('autotuner fallback'))
+            monkeypatch.setattr(f, 'uses_fixed_ada_tile', lambda device: False)
         for preset in ['balanced','fast']:
             torch.manual_seed(42+rank)
             m=quantize_module(Model().bfloat16(),QuantConfig(preset=preset),device,torch.bfloat16)

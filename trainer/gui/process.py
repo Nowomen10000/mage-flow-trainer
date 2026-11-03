@@ -77,6 +77,11 @@ def train_launch(config_path: str | Path, num_processes: int = 1, gpus: str = ""
     return Launch(argv, label)
 
 
+def calibration_launch(config_path):
+    return Launch([_python(), "-u", "-m", "trainer.tools.calibrate_int8", str(config_path),
+                   "--all-devices", "--force"], "calibrate INT8 kernels", is_training=False)
+
+
 def toolchain_jobs(config_path):
     if sys.platform != "win32":
         return []

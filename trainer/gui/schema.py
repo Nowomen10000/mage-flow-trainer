@@ -203,13 +203,20 @@ SPEC: dict[str, Spec] = {
         lambda: F.OptIntEditor("keep all")),
     "train.resume_from": _spec(
         "Resume from",
-        "Path to a checkpoint directory. Refuses to start if it holds no accelerator/ state, "
-        "rather than silently restarting the optimizer moments from zero.",
+        "Exact resume: checkpoint state directory or export with adjacent saved state. "
+        "Weights only: adapter .safetensors; match its rank, alpha, algorithm and targets, "
+        "and choose a new run name. The base model must be the same as the original run.",
         lambda: F.OptTextEditor("no resume")),
+    "train.resume_mode": _spec(
+        "Resume mode",
+        "Exact restores saved training state. Weights only loads an existing adapter directly "
+        "without merging into the base; optimizer, schedule, RNG, epoch and step counters start "
+        "fresh. Epochs/steps describe the new phase. No optimizer-state files needed.",
+        lambda: F.ChoiceEditor(["Exact (saved state)", "Weights only (new phase)"], ["exact", "weights"])),
     "train.save_optimizer_state": _spec(
         "Save optimizer state",
         'Save Accelerate model, optimizer, scheduler and RNG state for resume; consumes additional disk space.',
-        lambda: F.BoolEditor("Save optimizer state (required to resume)"), inline_label=True),
+        lambda: F.BoolEditor("Save optimizer state (for exact resume)"), inline_label=True),
     "train.allow_multi_gpu_texture": _spec(
         "Allow texture mode on multiple GPUs",
         "OFF by default, and the trainer REFUSES the combination rather than warning about it.\n\n"
@@ -584,6 +591,12 @@ SPEC: dict[str, Spec] = {
         "with an explicitly tuned learning rate. Separate from gradient clipping.",
         lambda: F.ChoiceEditor(["Upstream default", "relative", "rms_clip", "rms", "clip", "none"],
                                [None, "relative", "rms_clip", "rms", "clip", "none"])),
+    "optimizer.sinkhorn_iterations": _spec(
+        "SinkGD iterations",
+        "Standalone SDNQ-based SinkGD: alternating row/column gradient normalization. "
+        "Default 5 passes, no momentum. Vectors use RMS normalization; this is not "
+        "Advanced Optimizers SinkSGD. Kahan adds a residual buffer if enabled.",
+        lambda: F.IntEditor(1, 100)),
     "optimizer.use_first_moment": _spec(
         "Adafactor first moment",
         "SDNQ Adafactor: smooth normalized updates using the second beta (default 0.999). "
@@ -719,6 +732,13 @@ SPEC: dict[str, Spec] = {
         "Quantized matmul",
         'Auto defaults to off. Frozen MOSS INT8 matmul requires BF16 LyCORIS LoCon with bypass, INT8 weights, group_size=-1 and stochastic rounding off. Use Balanced/Fast to configure it.',
         lambda: F.ChoiceEditor(["auto", "on", "off"], ["auto", True, False])),
+    "quant.matmul_tuning": _spec(
+        "INT8 kernel calibration",
+        "Auto benchmarks and validates kernels once per GPU/software/model profile before training. "
+        "Cached only reuses an existing profile; Off retains the previous kernel selection. "
+        "Balanced/Fast and custom frozen INT8 matmul only. First calibration can take minutes; "
+        "new shapes may still compile. Use the button below to recalibrate selected GPUs.",
+        lambda: F.ChoiceEditor(["Auto (calibrate once)", "Cached only", "Off"], ["auto", "cached", "off"])),
     "quant.use_hadamard": _spec(
         "Hadamard rotation",
         "Rotate frozen MOSS INT8 weights and activations in groups of 256 to limit quantization error. "
@@ -818,7 +838,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
         ]),
         ("Checkpoints", [
             "train.save_every_epochs", "train.save_every_steps", "train.keep_last_n",
-            "train.save_native", "train.moss_qkv_format", "train.save_optimizer_state", "train.resume_from",
+            "train.save_native", "train.moss_qkv_format", "train.save_optimizer_state", "train.resume_from", "train.resume_mode",
             "train.skip_final_save",
         ]),
         ("Logging", [
@@ -831,7 +851,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
     ("Optimizer", [
         ("Optimizer", [
             "optimizer.kind", "optimizer.lr", "optimizer.betas", "optimizer.eps", "optimizer.momentum",
-            "optimizer.weight_decay", "optimizer.max_grad_norm", "optimizer.norm_mode",
+            "optimizer.weight_decay", "optimizer.max_grad_norm", "optimizer.norm_mode", "optimizer.sinkhorn_iterations",
         ]),
         ("Optimizer State", [
             "optimizer.quantize_state", "optimizer.offload_state", "optimizer.use_kahan", "optimizer.kahan_sum", "optimizer.gradient_release", "optimizer.use_first_moment",
@@ -886,7 +906,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
             'self_flow.adaln_fp32', 'self_flow.stochastic_rounding', 'self_flow.decay', 'self_flow.weight',
         ]),
         ("Quantization", [
-            "quant.preset", "quant.backend", "quant.mode", "quant.weights_dtype", "quant.use_quantized_matmul", "quant.use_hadamard",
+            "quant.preset", "quant.backend", "quant.mode", "quant.weights_dtype", "quant.use_quantized_matmul", "quant.use_hadamard", "quant.matmul_tuning",
             "quant.skip_policy", "quant.extra_skip",
             "quant.quantize_text_encoder", "quant.text_encoder_weights_dtype", "quant.use_stochastic_rounding",
             "quant.group_size", "quant.dynamic_loss_threshold",

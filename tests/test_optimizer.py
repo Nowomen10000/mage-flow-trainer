@@ -161,7 +161,7 @@ class OptimizerFamilyTests(unittest.TestCase):
                     torch.testing.assert_close(p, r, rtol=0, atol=0)
                     self.assertTrue(torch.isfinite(p).all())
                     self.assertFalse(torch.equal(p, torch.ones_like(p)))
-                elif spec.family == 'SDNQ':
+                elif spec.family == 'SDNQ' and kind != 'sinkgd':
                     import sdnq.optim
                     reference = getattr(sdnq.optim, spec.name)([torch.nn.Parameter(torch.ones(4, 4))])
                     self.assertEqual(opt.param_groups[0]['betas'], reference.param_groups[0]['betas'])
@@ -212,7 +212,16 @@ class OptimizerFamilyTests(unittest.TestCase):
         self.assertFalse(gui.editors['optimizer.quantize_state'].get())
         self.assertFalse(gui.editors['optimizer.use_kahan'].widget.isEnabled())
         self.assertTrue(gui.editors['optimizer.kahan_sum'].widget.isEnabled())
+        choose('sinkgd')
+        self.assertTrue(gui.editors['optimizer.sinkhorn_iterations'].widget.isEnabled())
+        self.assertFalse(gui.editors['optimizer.betas'].widget.isEnabled())
+        self.assertFalse(gui.editors['optimizer.eps'].widget.isEnabled())
+        self.assertEqual(gui.editors['optimizer.weight_decay'].get(), 0.0)
+        gui.editors['optimizer.sinkhorn_iterations'].set(7)
+        self.assertEqual(toml.loads(bridge.dump_toml(gui.collect()))['optimizer']['sinkhorn_iterations'], 7)
         choose('optimi_sgd')
+        self.assertFalse(gui.editors['optimizer.sinkhorn_iterations'].widget.isEnabled())
+        self.assertEqual(gui.editors['optimizer.sinkhorn_iterations'].get(), 5)
         self.assertTrue(gui.editors['optimizer.momentum'].widget.isEnabled())
         self.assertFalse(gui.editors['optimizer.betas'].widget.isEnabled())
         custom = bridge.defaults('optimi_adamw') | {'optimizer.kind': 'optimi_adamw',

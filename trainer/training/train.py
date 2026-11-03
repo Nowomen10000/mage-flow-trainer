@@ -178,6 +178,8 @@ class Trainer:
         configure_moss_checkpoint_ddp(cfg.train, self.accelerator.num_processes)
         from .attention_check import check_attention_backend
         check_attention_backend(cfg.train.attention_backend, self.accelerator.device, self.dtype)
+        from .int8_calibration import prepare_training
+        prepare_training(cfg, self.accelerator)
         # Rank-local global RNG still serves dropout and other model operations.
         # DDP synchronizes initial model/adapter weights. Flow draws use separate
         # streams below; stochastic optimizer updates use shared isolated RNG.
@@ -187,6 +189,20 @@ class Trainer:
                                 self.accelerator.num_processes, self.accelerator.device)
 
         self.out_dir = Path(cfg.train.output_dir) / cfg.train.run_name
+        if cfg.train.resume_mode == "weights":
+            from .adapter_loading import validate_new_phase_output
+            from accelerate.utils import broadcast_object_list
+            # Check once, before any rank creates the run/config. Otherwise a
+            # slower rank can mistake rank zero's new files for an older run.
+            error = [None]
+            if self.accelerator.is_main_process:
+                try:
+                    validate_new_phase_output(cfg)
+                except (ValueError, OSError) as exc:
+                    error[0] = str(exc)
+            broadcast_object_list(error)
+            if error[0]:
+                raise ValueError(error[0])
         if self.accelerator.is_main_process:
             self.out_dir.mkdir(parents=True, exist_ok=True)
             # The config that produced these checkpoints, copied verbatim so its comments survive.
@@ -280,7 +296,7 @@ class Trainer:
         self.global_step = 0
         self.start_epoch = 0
         self.resume_skip_batches = 0
-        if cfg.train.resume_from:
+        if cfg.train.resume_from and cfg.train.resume_mode == "exact":
             self._resume(cfg.train.resume_from)
 
     def _dynamo_plugin(self):
@@ -402,10 +418,17 @@ class Trainer:
             self.keep_fraction, self.rti_phase = 1.0, None
         self._quantize()
 
+        self.adapter_initialization = None
         if cfg.is_lora:
             apply_adapter(
                 self.transformer, cfg.adapter
             )
+            if cfg.train.resume_mode == "weights":
+                from .adapter_loading import load_adapter_weights
+                self.adapter_initialization = load_adapter_weights(self.transformer, cfg.train.resume_from)
+                self.accelerator.print(
+                    f"Loaded adapter weights from {cfg.train.resume_from}; base unchanged. "
+                    "Starting a new phase at step 0 with fresh optimizer, schedule and RNG.")
             self.param_report = build_adapter_param_groups(
                 self.transformer,
                 cfg.component_lr,
@@ -1211,6 +1234,12 @@ class Trainer:
                 rotation = "Hadamard group 256" if cfg.quant.use_hadamard else "no rotation"
                 print(f"quant    {cfg.quant.preset}: frozen INT8 storage + INT8 matmul, "
                       f"{nq}/{ntotal} Linear quantized; {rotation}; BF16 adapters/attention")
+                from .int8_calibration import has_profile
+                from .frozen_matmul import uses_fixed_ada_tile
+                if has_profile(self.accelerator.device):
+                    print("         calibrated INT8 kernels; per-shape autotuning disabled for profiled projections")
+                elif uses_fixed_ada_tile(self.accelerator.device):
+                    print("         Ada INT8 tile 128x128x128; per-shape matmul autotuning disabled")
             elif cfg.quant.backend == "convrot":
                 print(f"quant    ConvRot frozen/int8, {nq}/{ntotal} Linear quantized, "
                       f"skip={cfg.quant.skip_policy}; INT8 matmul ON, rotation group 256")
@@ -1281,6 +1310,9 @@ class Trainer:
                     continue
             print(describe_feasibility(sizes, cfg.dataset.texture))
         est = estimate_optimizer_bytes(trainable, cfg.optimizer) / 1e9
+        if cfg.optimizer.kind == "sinkgd":
+            print(f"optim    standalone SinkGD, {cfg.optimizer.sinkhorn_iterations} normalization passes; "
+                  "no momentum, vector RMS normalization")
         if cfg.optimizer.kind in ("adafactor", "came"):
             norm_mode = self.optimizer.param_groups[0]["norm_mode"]
             print(f"optim    update normalization={norm_mode}")
@@ -1361,6 +1393,8 @@ class Trainer:
             world_size=acc.num_processes,
             effective_batch_size=effective_batch_size,
         )
+        if getattr(self, "adapter_initialization", None) is not None:
+            runtime['adapter_initialization'] = self.adapter_initialization
         offloader = getattr(transformer, '_activation_offloader', None)
         if offloader is not None:
             runtime['activation_offload_peak_host_bytes_rank0'] = offloader.peak_bytes
@@ -1378,6 +1412,7 @@ class Trainer:
                 json.dumps({"global_step": self.global_step, "tensors": n,
                             "successful_updates": self.successful_updates, "skipped_updates": self.skipped_updates,
                             "source_checkpoint": self.source_checkpoint,
+                            "adapter_initialization": getattr(self, "adapter_initialization", None),
                             "flow_rng_version": self.flow_rng.version}, indent=2)
             )
         _emit(self, f"saved {written} ({n} tensors)")
@@ -1492,6 +1527,7 @@ class Trainer:
                 f"save_full_state disabled, so it can be used for inference but not resumed."
             )
         saved_state = json.loads(state_file.read_text())
+        self.adapter_initialization = saved_state.get("adapter_initialization")
         self.flow_rng.load(acc_dir, required='flow_rng_version' in saved_state)
         from sdnq.training import SDNQTensor
         from sdnq.dequantizer import SDNQDequantizer

@@ -21,6 +21,9 @@ OPTIMIZERS = {
     "came": OptimizerSpec("SDNQ", "CAME", (0.9, 0.999, 0.9999)),
     "lion": OptimizerSpec("SDNQ", "Lion", (0.9, 0.999)),
     "muon": OptimizerSpec("SDNQ", "Muon", (0.9, 0.999)),
+    # Stateless: no betas/eps. Lives in the SDNQ family so use_kahan/state options and SDNQTensor
+    # master weights work like the other SDNQ optimizers.
+    "sinkgd": OptimizerSpec("SDNQ", "SinkGD", (), None, 0.0),
     "optimi_adam": OptimizerSpec("Optimi", "Adam", (0.9, 0.99), 1e-6, 0),
     "optimi_adamw": OptimizerSpec("Optimi", "AdamW", (0.9, 0.99), 1e-6),
     "optimi_adan": OptimizerSpec("Optimi", "Adan", (0.98, 0.92, 0.99), 1e-6, 0.02),
@@ -37,13 +40,15 @@ def optimizer_defaults(kind):
     return dict(betas=spec.betas, eps=spec.eps, weight_decay=spec.weight_decay,
                 use_kahan=False, kahan_sum=(False if kind == "optimi_adan" else "auto") if spec.family == "Optimi" else None,
                 quantize_state=False, offload_state=False, momentum=0.0, gradient_release=False,
-                norm_mode=None, use_first_moment=False)
+                norm_mode=None, use_first_moment=False, sinkhorn_iterations=5)
 
 
 def supports(kind, option):
     spec = OPTIMIZERS.get(kind)
     if spec is None:
         return False
+    if option == "sinkhorn_iterations":
+        return kind == "sinkgd"
     if option == "betas":
         return bool(spec.betas)
     if option == "norm_mode":

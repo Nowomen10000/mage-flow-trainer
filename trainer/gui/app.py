@@ -30,7 +30,7 @@ from .timestep_plot import TimestepDistributionWidget
 from .run_queue import RunQueueWidget
 from .preferences import Preferences
 from .process import (Job, ProcessRunner, audit_launch, cache_launch, concat_launch,
-                      train_launch, training_env, toolchain_jobs)
+                      train_launch, training_env, toolchain_jobs, calibration_launch)
 from .schema import LAYOUT, SPEC
 from .widgets import (
     DANGER,
@@ -107,6 +107,9 @@ _RULES = {
         "dense_prefix_blocks", "dense_suffix_blocks", "size_buckets", "start_keep", "target_keep",
         "identity_steps", "warmup_steps", "anneal_steps", "budget_steps")},
 
+    "quant.matmul_tuning": lambda c: (c.get("quant.preset") in ("balanced", "fast") or (
+        c.get("quant.backend") == "sdnq" and c.get("quant.mode") == "frozen" and c.get("quant.use_quantized_matmul") is True)),
+    "train.resume_mode": lambda c: bool(c.get("train.resume_from")),
     "train.moss_qkv_format": lambda c: (c.get("train.model_family") in ("auto", "moss_image")
         and (c.get("adapter.kind") in ("none", "lora") or (c.get("adapter.kind") == "lycoris_lora" and c.get("adapter.lycoris_algo") == "locon"))),
     "train.activation_offload_budget_mb": lambda c: bool(c.get("train.activation_offload")),
@@ -130,7 +133,7 @@ _RULES = {
     **{f"optimizer.{option}": (lambda c, option=option: supports(c.get("optimizer.kind"), option))
        for option in ("betas", "eps", "use_kahan", "kahan_sum", "momentum",
                       "quantize_state", "offload_state", "gradient_release", "norm_mode",
-                      "use_first_moment")},
+                      "use_first_moment", "sinkhorn_iterations")},
 
     "schedule.min_lr_ratio": lambda c: c.get("schedule.kind") != "constant",
     "schedule.d": lambda c: c.get("schedule.kind") == "rex",
@@ -388,6 +391,10 @@ class TrainingGUI(QtWidgets.QWidget):
                     form = field_form()
                 self._add_field(form, key)
             lay.addLayout(form)
+            if "quant.matmul_tuning" in keys:
+                self.calibrate_btn = make_btn("Calibrate INT8 kernels", self._calibrate_int8)
+                self.calibrate_btn.setToolTip("Benchmark selected GPUs sequentially and replace their matching calibration profiles. No training or model loading.")
+                lay.addWidget(self.calibrate_btn)
             (left if running < target else right).addWidget(gb)
             running += len(keys)
 
@@ -948,6 +955,7 @@ class TrainingGUI(QtWidgets.QWidget):
         # and a traceback into an immediate, readable no.
         notes = bridge.advisories(flat, self.num_processes())
         blocking = [m for lvl, m in notes if lvl == "error"]
+        self.calibrate_btn.setEnabled(ok and not running and _RULES["quant.matmul_tuning"](flat))
         self.start_btn.setEnabled(ok and not running and not blocking)
         self.add_queue_btn.setEnabled(ok and not blocking)
         # The queue has its own Start button; do not offer the unrelated editor's
@@ -1172,6 +1180,19 @@ class TrainingGUI(QtWidgets.QWidget):
         self._refresh()
         if self._queue:
             self._schedule_next_job()
+
+    def _calibrate_int8(self):
+        if self.runner is not None or self._queue or self._batch_queue_active:
+            self.log("Wait for the current job before calibrating INT8 kernels.")
+            return
+        flat = self.collect()
+        ok, err = bridge.validate(flat)
+        if not ok or not _RULES["quant.matmul_tuning"](flat):
+            self.log(f"CONFIG ERROR: {err or 'Select frozen MOSS INT8 matmul first.'}")
+            return
+        path = self._temporary_config_dir() / "int8-calibration.toml"
+        bridge.write_toml(path, flat)
+        self._run(calibration_launch(path), training=False)
 
     def _start(self):
         if self.pipeline_chk.isChecked():

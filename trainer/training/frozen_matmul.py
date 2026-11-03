@@ -6,6 +6,8 @@ adapter parameters are trainable; these operators do not compute base gradients.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+import os
 import torch
 from torch import nn
 from sdnq.dequantizer import dequantize_symmetric_compiled
@@ -27,9 +29,41 @@ _backward_inputs = _dynamic_helper(get_int8_matmul_dynamic_inputs)
 _rotate = _dynamic_helper(rotate_hadamard_compiled)
 
 
+@lru_cache(maxsize=None)
+def _is_ada(device):
+    return device.type == "cuda" and torch.cuda.get_device_capability(device) == (8, 9)
+
+
+def uses_fixed_ada_tile(device):
+    """Only specialize the hardware measured; honor SDNQ kernel overrides."""
+    from sdnq import kernel_wrappers
+    return (kernel_wrappers.use_triton_scaled_mm and _is_ada(device)
+            and not any(key.startswith("SDNQ_TRITON_MM_") for key in os.environ))
+
+
+def _ada_scaled_mm(x, weight, x_scale, scale, dtype):
+    # SDNQ 0.2.4 tunes 18 candidates for every new ceil(tokens/256) key.
+    # Packed DDP gives each rank different keys: ~6s steps became ~60s while
+    # the other rank waited. All measured MOSS projection shapes on RTX 4090
+    # selected this tile. Reuse SDNQ's exact INT32-accumulating kernel without
+    # its tuner (or its 256 MiB benchmark buffer). New shapes still JIT compile.
+    from .int8_calibration import launch_scaled_mm
+    tile = dict(BLOCK_SIZE_M=128, BLOCK_SIZE_N=128, BLOCK_SIZE_K=128,
+                GROUP_SIZE_M=8, num_warps=4, num_stages=2)
+    return launch_scaled_mm(x, weight, x_scale, scale, dtype, tile)
+
+
+
 def _gemm(inputs):
     x, weight, x_scale, scale, bias, after, dtype, shape = inputs
     assert after is None
+    if bias is None:
+        from .int8_calibration import select_tile, launch_scaled_mm
+        tile = select_tile(x.device, x.shape[0], weight.shape[1], x.shape[1], weight.is_contiguous())
+        if tile is not None:
+            return launch_scaled_mm(x, weight, x_scale, scale, dtype, tile).view(shape)
+    if bias is None and uses_fixed_ada_tile(x.device):
+        return _ada_scaled_mm(x, weight, x_scale, scale, dtype).view(shape)
     return int_scaled_mm_func(x, weight, x_scale, scale, bias=bias, out_dtype=dtype).view(shape)
 
 

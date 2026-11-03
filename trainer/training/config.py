@@ -48,6 +48,7 @@ class OptimizerConfig:
     # SDNQ Adafactor/CAME update normalization; None preserves upstream defaults.
     norm_mode: str | None = None
     use_first_moment: bool = False  # SDNQ Adafactor; smoothing uses betas[1].
+    sinkhorn_iterations: int = 5  # Standalone SinkGD normalization passes.
 
     # Optimi's name is deliberately separate from SDNQ's use_kahan.
     kahan_sum: bool | str | None = None
@@ -63,6 +64,10 @@ class OptimizerConfig:
         if self.kind not in OPTIMIZERS:
             raise ValueError(f"unknown optimizer: {self.kind!r}")
         spec = OPTIMIZERS[self.kind]
+        if type(self.sinkhorn_iterations) is not int or self.sinkhorn_iterations < 1:
+            raise ValueError("optimizer.sinkhorn_iterations must be a positive integer")
+        if self.kind != "sinkgd" and self.sinkhorn_iterations != 5:
+            raise ValueError("optimizer.sinkhorn_iterations only applies to SinkGD")
         if type(self.use_first_moment) is not bool:
             raise ValueError("optimizer.use_first_moment must be true or false")
         if self.use_first_moment and self.kind != "adafactor":
@@ -214,6 +219,7 @@ class TrainConfig:
     save_native: bool = True            # also write a ComfyUI-loadable single file
     keep_last_n: int | None = None
     resume_from: str | None = None
+    resume_mode: str = "exact"  # exact: full saved state; weights: new phase from adapter file.
     # Optimizer + scheduler state alongside each checkpoint. Required to resume; costs roughly the
     # optimizer-state size on disk per checkpoint, which for a quantized full FT is ~3.5GB.
     save_optimizer_state: bool = False
@@ -249,6 +255,10 @@ class TrainConfig:
     moss_checkpoint_inside_compile: bool = False
 
     def __post_init__(self):
+        if self.resume_mode not in ("exact", "weights"):
+            raise ValueError("train.resume_mode must be exact or weights")
+        if self.resume_mode == "weights" and not self.resume_from:
+            raise ValueError("train.resume_mode='weights' requires train.resume_from")
         if self.moss_qkv_format not in ("auto", "separated", "fused"):
             raise ValueError("train.moss_qkv_format must be auto, separated or fused")
         if self.model_family not in ("auto", "mage_flow", "flux3", "moss_image"):
@@ -378,6 +388,9 @@ def _build(cls, data: dict, path: str):
 
 
 def validate_model_options(cfg):
+    if cfg.train.resume_mode == "weights":
+        from .adapter_loading import validate_weights_source
+        validate_weights_source(cfg)
     from ..tools.windows_toolchain import validate_windows_attention
     validate_windows_attention(cfg.train.attention_backend, cfg.train.pack_resolutions)
     if cfg.train.activation_offload and cfg.self_flow.enabled:

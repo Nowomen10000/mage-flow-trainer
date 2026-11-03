@@ -130,6 +130,32 @@ SDNQ, Optimi Lion, and Optimi SGD because these implementations do not accept it
 legacy SDNQ TOMLs containing epsilon remain readable, but the value has no effect.
 Optimi SGD exposes `momentum` instead of betas.
 
+**SinkGD (standalone, SDNQ-based)** is available as `optimizer.kind="sinkgd"`
+in the GUI and TOML. It normalizes matrix gradients by alternating row and
+column L2 norms, with `sinkhorn_iterations=5` by default. Convolution factors
+are flattened to matrices; vectors use RMS normalization. Weight decay defaults
+to zero; there are no momentum or variance buffers and no betas/epsilon controls.
+Learning rate and global gradient clipping remain explicit user settings.
+This normalization can largely cancel uniform gradient clipping, so tune its LR
+separately rather than assuming AdamW's update scale.
+
+It uses pinned SDNQ's parameter-update machinery for BF16 stochastic rounding,
+quantized master weights, and optional Kahan compensation. State quantization
+and offload only have tensor buffers to act on when Kahan is enabled. This is
+not Advanced Optimizers' `SinkSGD_adv`: that implementation has different norm
+floors/order, sign updates for vectors, and optional momentum/scaling features.
+No `adv_optm` dependency is required. Implementation tests do not establish an
+image-quality advantage over existing optimizers.
+
+```toml
+[optimizer]
+kind = "sinkgd"
+lr = 1e-4                   # example, not a validated universal setting
+sinkhorn_iterations = 5
+weight_decay = 0.0
+use_kahan = false
+```
+
 SDNQ Adafactor defaults to `betas = [-0.8, 0.999]`; its first value is a negative
 second-moment decay exponent. SDNQ CAME uses `[0.9, 0.999, 0.9999]`, and Optimi Adan
 uses `[0.98, 0.92, 0.99]`. Explicit AdamW-style positive decay exponents for Adafactor
@@ -184,6 +210,46 @@ For storage-only SDNQ comparisons, `weights_dtype = "uint8"` uses asymmetric
 keep conditioning unchanged while switching transformer storage dtype. If the
 encoder override is omitted, it inherits `weights_dtype`, preserving existing
 config behavior. The GUI exposes both UINT8 and this independent encoder setting.
+
+### INT8 kernel calibration
+
+MOSS frozen INT8 matmul (Balanced/Fast and equivalent Custom settings) supports
+`quant.matmul_tuning = "auto"` (default), `"cached"`, or `"off"`. Auto benchmarks
+once per matching GPU/software profile before model loading. Cached only reuses
+existing results; Off preserves the previous launch selection. Old TOMLs inherit
+Auto when they use frozen INT8 matmul; other quantization modes are unchanged.
+
+The GUI's **Calibrate INT8 kernels** button refreshes the selected GPUs sequentially
+without loading model weights or starting training. The CLI equivalent is:
+
+```bash
+python -m trainer.tools.calibrate_int8 configs/my-run.toml --all-devices --force
+# Or one GPU, indexed within CUDA_VISIBLE_DEVICES:
+python -m trainer.tools.calibrate_int8 configs/my-run.toml --device 0
+```
+
+Use idle GPUs for meaningful timings. Calibration tests forward and input-gradient
+projection layouts at 512, 4096 and 16384 tokens, skipping large probes when memory
+headroom is insufficient. Candidate outputs are checked against sampled CPU INT64
+reference calculations at tile edges and tails, for aligned and odd token counts.
+The fastest passing tile is chosen using median CUDA-event timing of repeated graph replays after compilation
+and warmup. If no Triton candidate passes, a direct PyTorch INT8 fallback is tested;
+if no implementation passes for a required layout, calibration stops with an error.
+These checks do not establish end-to-end training quality or optimal batch size.
+
+DDP ranks calibrate sequentially and share failures before training begins. Runtime
+uses the nearest measured token anchor for each projection/layout, avoiding SDNQ's
+per-token-count autotuning. It still may compile kernels for new shapes. Explicit
+`SDNQ_TRITON_MM_*` environment overrides disable calibration and retain precedence.
+
+Profiles are local JSON in `$XDG_CACHE_HOME/bluflow-trainer/int8-kernels` (normally
+`~/.cache/...`) on Linux, or `%LOCALAPPDATA%/bluflow-trainer/int8-kernels` on Windows.
+Set `BLUFLOW_INT8_CACHE_DIR` to override this for both training and calibration;
+CLI `--cache-dir` overrides it for that invocation only. GPU identity, architecture,
+driver, PyTorch, Triton, SDNQ, kernel code and projection dimensions are included
+in the cache key. Rerun with `--force` after changing clocks or power settings.
+This is NVIDIA CUDA support; an Ada test does not establish Ampere or Windows
+compatibility, which must pass calibration on the user's actual installation.
 
 ### Optimi gradient release (single GPU)
 
@@ -267,6 +333,38 @@ Restart the trainer for new saves to include this metadata; an already-running
 process keeps its loaded export code.
 
 Enable `train.save_optimizer_state=true` to save resumable Accelerate state. Resume skips already-consumed microbatches within the current epoch. `train.resume_from` accepts the exported safetensors path or its adjacent `-state` directory. Inference exports alone cannot resume optimizer state. Keep the dataset and batching configuration consistent when resuming.
+
+To continue a finished adapter **without optimizer state**, select **Checkpoints →
+Resume mode → Weights only (new phase)** and point **Resume from** at its
+`.safetensors` file:
+
+```toml
+[train]
+run_name = "my-lora-phase2"  # use a fresh output directory
+resume_from = "output/my-lora/my-lora-epoch010.safetensors"
+resume_mode = "weights"
+epochs = 10                # ten new epochs, starting at epoch/step zero
+```
+
+This loads the adapter directly; it does not merge into or change the frozen
+base. Use the same base and matching adapter algorithm, rank, alpha, components,
+and MOSS text-refiner selection. You may change the dataset, resolution, batch
+size, optimizer, LR, and schedule. Optimizer state, schedule, counters, and RNG
+start fresh using the new config. Exports record the source adapter identity
+and step in `training_state.adapter_initialization`.
+
+Both native separated exports and our fused MOSS QKV exports are supported.
+Our block-diagonal fused factors are restored exactly to their original training
+rank. General fused adapters require a compatible full rank; incompatible or
+non-block-diagonal rank reductions fail rather than approximating the weights.
+Targets, shapes, alpha, and finite values are checked before loading. Export
+precision still applies: loading a BF16 export cannot recover its former FP32 bits.
+This mode supports adapter training; for full finetuning from an exported model,
+set `train.transformer_path` instead.
+
+Omitting `resume_mode` retains `"exact"`, which still requires saved training
+state. Weights-only continuation deliberately does not keep old optimizer
+moments or inherit a completed run's near-zero scheduled LR.
 
 ### Random streams and DDP
 

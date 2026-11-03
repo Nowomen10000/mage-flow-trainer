@@ -50,6 +50,7 @@ class QuantConfig:
     )
     use_quantized_matmul: bool | str = "auto"
     use_hadamard: bool = False
+    matmul_tuning: str = "auto"  # auto: calibrate/cache; cached: reuse only; off: previous selection.
     quantize_text_encoder: bool = False
     text_encoder_weights_dtype: str | None = None  # None inherits weights_dtype
 
@@ -62,6 +63,8 @@ class QuantConfig:
     use_stochastic_rounding: bool = True
 
     def __post_init__(self):
+        if self.matmul_tuning not in ("auto", "cached", "off"):
+            raise ValueError("quant.matmul_tuning must be auto, cached or off")
         if self.preset != "custom" and self.preset not in QUANT_PRESETS:
             raise ValueError(f"unknown quant preset: {self.preset!r}")
         for key, value in QUANT_PRESETS.get(self.preset, {}).items():

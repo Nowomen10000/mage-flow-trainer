@@ -14,7 +14,7 @@ from .optimizer_specs import OPTIMIZERS
 # keeps the two paths from diverging.
 _BOOKKEEPING_KEYS = ("component",)
 
-_SDNQ_KINDS = {"adamw8bit", "adafactor", "came", "lion", "muon"}
+_SDNQ_KINDS = {"adamw8bit", "adafactor", "came", "lion", "muon", "sinkgd"}
 
 
 def _strip(groups: list[dict]) -> list[dict]:
@@ -57,9 +57,10 @@ def build_optimizer(groups: list[dict], cfg: OptimizerConfig) -> torch.optim.Opt
         raise ValueError(f"unknown optimizer: {cfg.kind!r} (expected 'adamw' or one of {sorted(_SDNQ_KINDS)})")
 
     from sdnq.optim import CAME, Adafactor, AdamW, Lion, Muon
+    from .sinkgd import SinkGD
 
     factory = {"adamw8bit": AdamW, "adafactor": Adafactor, "came": CAME,
-               "lion": Lion, "muon": Muon}[kind]
+               "lion": Lion, "muon": Muon, "sinkgd": SinkGD}[kind]
 
     optimizer = factory(
         clean,
@@ -76,6 +77,7 @@ def build_optimizer(groups: list[dict], cfg: OptimizerConfig) -> torch.optim.Opt
         # makes the *realised* one zero by carrying the remainder forward. Off by default because
         # it costs a buffer per parameter and SR alone is what every measurement here was taken on.
         use_kahan=cfg.use_kahan,
+        **({"sinkhorn_iterations": cfg.sinkhorn_iterations} if kind == "sinkgd" else {}),
         **({"norm_mode": cfg.norm_mode} if cfg.norm_mode is not None else {}),
         **({"use_first_moment": cfg.use_first_moment} if kind == "adafactor" else {}),
     )
@@ -239,8 +241,10 @@ def build_scheduler(
 def estimate_optimizer_bytes(num_trainable: int, cfg: OptimizerConfig) -> int:
     """Rough optimizer-state footprint, for the pre-flight report. Advisory, not a guarantee."""
     kind = cfg.kind.lower()
-    if kind in ("adafactor",):
-        per_param = 0.5          # factored second moment; first moment optional
+    if kind == "sinkgd":
+        per_param = 0.0          # stateless; only the optional Kahan buffer below costs memory
+    elif kind in ("adafactor",):
+        per_param = 0.5         # factored second moment; first moment optional
     elif kind in ("lion",):
         per_param = 4.0          # one momentum buffer
     elif kind in ("came",):
