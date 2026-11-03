@@ -50,7 +50,7 @@ class Job:
     on_failure: str = "stop"      # "stop" cancels the remaining queue; "continue" does not
     config_path: Path | None = None
     config_digest: str | None = None
-    queue_index: int | None = None
+    queue_index: int | None = None  # Stable queue-entry ID, independent of row order.
 
 
 def _python() -> str:

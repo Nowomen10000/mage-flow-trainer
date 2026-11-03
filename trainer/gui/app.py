@@ -213,6 +213,8 @@ class TrainingGUI(QtWidgets.QWidget):
         self._batch_queue_active = False
         self._queue_cancelled = False
         self._active_queue_index = None
+        self._queue_destinations = {}
+        self._queue_output_tail = ""
         self._queue_generation = 0
         self._on_failure = "stop"
         self._applying = False
@@ -509,6 +511,9 @@ class TrainingGUI(QtWidgets.QWidget):
             "Any step failing cancels the rest -- a merge missing a parent looks fine and is not.")
         self.pipeline_chk.toggled.connect(self._refresh)
         self.pipeline_chk.hide()
+        self.add_queue_btn = make_btn("Save && add to queue", self._save_to_queue)
+        self.add_queue_btn.setToolTip("Validate and save these settings, then add a separate snapshot to the queue. Works while training and with Autosave off.")
+        row.addWidget(self.add_queue_btn)
         self.start_btn = make_btn("Start Training", self._start, style="accent")
         self.start_btn.setFixedWidth(160)
         row.addWidget(self.start_btn)
@@ -900,6 +905,7 @@ class TrainingGUI(QtWidgets.QWidget):
         notes = bridge.advisories(flat, self.num_processes())
         blocking = [m for lvl, m in notes if lvl == "error"]
         self.start_btn.setEnabled(ok and not running and not blocking)
+        self.add_queue_btn.setEnabled(ok and not blocking)
         # The queue has its own Start button; do not offer the unrelated editor's
         # single-run action while viewing queued TOMLs.
         self.start_btn.setVisible(not running and self.tab_bar.currentIndex() != self.queue_tab)
@@ -931,6 +937,8 @@ class TrainingGUI(QtWidgets.QWidget):
     def _handle_output(self, line, is_progress):
         self.log(line, replace_last=is_progress and self._last_was_progress)
         self._last_was_progress = is_progress
+        if not is_progress:
+            self._remember_queue_output(line)
 
     _last_was_progress = False
 
@@ -948,6 +956,8 @@ class TrainingGUI(QtWidgets.QWidget):
         self.runner = ProcessRunner(launch, str(PROJECT_ROOT), env)
         self.runner.logSignal.connect(self.log)
         self.runner.errorSignal.connect(self.log)
+        self.runner.logSignal.connect(self._remember_queue_output)
+        self.runner.errorSignal.connect(self._remember_queue_output)
         self.runner.progressSignal.connect(self._handle_output)
         self.runner.metricsSignal.connect(self.metrics.parse_and_update)
         self.runner.finishedSignal.connect(self._finished)
@@ -961,59 +971,128 @@ class TrainingGUI(QtWidgets.QWidget):
         self._refresh()
         self.runner.start()
 
-    def _start_queue(self):
+    def _save_to_queue(self):
+        flat = self.collect()
+        ok, error = bridge.validate(flat)
+        errors = [text for level, text in bridge.advisories(flat, self.num_processes()) if level == "error"]
+        if not ok or errors:
+            self.log(f"CONFIG ERROR: {error or '; '.join(errors)}")
+            return
+        path = self._persist(flat)
+        if path is None:
+            return
+        self._load_presets(select=path, apply=False)
+        added = self.run_queue.add_paths([path])
+        self.log(f"Saved {path}. " + ("Added settings snapshot to queue." if added else
+                                      "Not added; check the queue for an existing entry or save error."))
+        self.tab_bar.setCurrentIndex(self.queue_tab)
+
+    def _prepare_queue_entry(self, entry):
         from ..training.config import load_config
 
+        if hashlib.sha256(entry.snapshot.read_bytes()).hexdigest() != entry.digest:
+            raise ValueError("Queued snapshot was modified; remove it and add the config again.")
+        cfg = load_config(entry.snapshot)
+        flat = bridge.flatten(asdict(cfg))
+        errors = [text for level, text in bridge.advisories(flat, self.num_processes()) if level == "error"]
+        if errors:
+            raise ValueError("; ".join(errors))
+        destination = (PROJECT_ROOT / cfg.train.output_dir / cfg.train.run_name).resolve()
+        owner = self._queue_destinations.get(destination)
+        if owner is not None and owner != entry.id and any(e.id == owner for e in self.run_queue.entries()):
+            raise ValueError(f"Duplicate output directory/run_name: {destination}. Give each queued run a distinct name.")
+        steps = self._cache_jobs(flat) + [Job(train_launch(entry.snapshot, self.num_processes()), training=True)]
+        self._queue_destinations[destination] = entry.id
+        return [replace(job, config_path=entry.snapshot, config_digest=entry.digest,
+                        queue_index=entry.id) for job in steps]
+
+    def _start_queue(self):
         if self.runner is not None or self._queue or self._batch_queue_active:
             return
-        jobs = []
-        destinations = set()
-        try:
-            for index, path in enumerate(self.run_queue.paths()):
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                cfg = load_config(path)
-                flat = bridge.flatten(asdict(cfg))
-                errors = [text for level, text in bridge.advisories(flat, self.num_processes()) if level == "error"]
-                if errors:
-                    raise ValueError("; ".join(errors))
-                destination = ((PROJECT_ROOT / cfg.train.output_dir).resolve(), cfg.train.run_name)
-                if destination in destinations:
-                    raise ValueError(f"Duplicate output directory/run_name: {destination}. Give each queued run a distinct name.")
-                destinations.add(destination)
-                steps = self._cache_jobs(flat) + [Job(train_launch(path, self.num_processes()), training=True)]
-                jobs.extend(replace(job, config_path=path, config_digest=digest, queue_index=index) for job in steps)
-        except Exception as exc:
-            message = f"Queue validation failed for {path}: {exc}"
-            self.log(message)
-            self.run_queue.status.setText(message)
-            return
-        if not jobs:
+        destinations = dict(self._queue_destinations)
+        # Keep the existing preflight when starting. Later additions are validated
+        # when selected, so a running config never has to be rebuilt or interrupted.
+        for entry in self.run_queue.pending():
+            try:
+                self._prepare_queue_entry(entry)
+            except Exception as exc:
+                message = f"Queue validation failed for {entry.source}: {exc}"
+                self.log(message)
+                self.run_queue.mark(entry.id, "Failed", message)
+                if not self.run_queue.continue_on_error.isChecked():
+                    self._queue_destinations = destinations
+                    return
+        self._queue_destinations = destinations
+        if not self.run_queue.pending():
             return
         self._batch_queue_active = True
         self._queue_cancelled = False
-        self.run_queue.reset_status()
-        self._queue = jobs[1:]
-        self.log(f"Starting queue: {len(self.run_queue.paths())} TOMLs, {len(jobs)} cache/train steps.")
-        self._run_job(jobs[0])
+        self._queue_generation += 1
+        self.log(f"Starting queue: {len(self.run_queue.pending())} pending TOMLs.")
+        self._advance_queue()
+
+    def _advance_queue(self):
+        if not self._batch_queue_active or self._queue_cancelled:
+            return
+        for entry in self.run_queue.pending():
+            try:
+                jobs = self._prepare_queue_entry(entry)
+            except Exception as exc:
+                message = f"Queue validation failed for {entry.source}: {exc}"
+                self.log(message)
+                self.run_queue.mark(entry.id, "Failed", message)
+                if not self.run_queue.continue_on_error.isChecked():
+                    self._end_batch("Queue failed.")
+                    return
+                continue
+            self._queue = jobs[1:]
+            self._run_job(jobs[0])
+            return
+        failed = sum(e.status == "Failed" for e in self.run_queue.entries())
+        self._end_batch(f"Queue finished with {failed} failed configuration(s)." if failed else "Queue completed.")
+
+    def _end_batch(self, message):
+        self._queue = []
+        self._batch_queue_active = False
+        self._active_queue_index = None
+        self.run_queue.end(message)
+        self._refresh()
+
+    def _schedule_next_job(self):
+        generation = self._queue_generation
+        def advance():
+            if generation != self._queue_generation:
+                return
+            if self._queue:
+                self._run_job(self._queue.pop(0))
+            elif self._batch_queue_active:
+                self._advance_queue()
+        QtCore.QTimer.singleShot(0, advance)
+
+    def _queue_entry_failed(self, message):
+        self.log(message)
+        self.run_queue.mark(self._active_queue_index, "Failed", message)
+        self._queue = []  # All remaining steps of this config depend on the failed one.
+        if self.run_queue.continue_on_error.isChecked() and not self._queue_cancelled:
+            self._schedule_next_job()
+        else:
+            self._end_batch("Queue failed.")
+
+    def _remember_queue_output(self, text):
+        if self._batch_queue_active:
+            self._queue_output_tail = (self._queue_output_tail + str(text) + "\n")[-6000:]
 
     def _run_job(self, job):
         self._active_queue_index = job.queue_index
         if job.config_path is not None:
             try:
                 if hashlib.sha256(job.config_path.read_bytes()).hexdigest() != job.config_digest:
-                    raise ValueError(f"Queued TOML changed after validation: {job.config_path}. Restart the queue to use the edited file.")
+                    raise ValueError("Queued snapshot was modified; remove it and add the config again.")
             except (OSError, ValueError) as exc:
-                self.log(str(exc))
-                self._queue = []
-                self._batch_queue_active = False
-                self.run_queue.mark(job.queue_index, "Failed")
-                self.run_queue.end(str(exc))
-                self._active_queue_index = None
-                self.start_btn.setVisible(True)
-                self.stop_btn.setVisible(False)
-                self._refresh()
+                self._queue_entry_failed(str(exc))
                 return
             self.run_queue.mark(job.queue_index, "Training" if job.training else "Caching")
+            self._queue_output_tail = ""
         self._run(job.launch, job.training, job.on_failure)
 
     def _finished(self, code):
@@ -1030,33 +1109,25 @@ class TrainingGUI(QtWidgets.QWidget):
         # emit has returned.
         self._retired, self.runner = self.runner, None
         QtCore.QTimer.singleShot(0, lambda: setattr(self, "_retired", None))
+        if self._batch_queue_active:
+            if self._queue_cancelled:
+                self.run_queue.mark(self._active_queue_index, "Stopped")
+                self._end_batch("Queue stopped.")
+            elif code:
+                self._queue_entry_failed(f"Process exited with code {code}.\n{self._queue_output_tail}".strip())
+            else:
+                if self._running_training:
+                    self.run_queue.mark(self._active_queue_index, "Completed")
+                self._schedule_next_job()
+            self._refresh()
+            return
+
         if code != 0 and self._on_failure == "stop" and self._queue:
-            # Every later step depends on this one having produced its output, so carrying on would
-            # not salvage anything -- it would produce a plausible-looking artifact built on a
-            # missing input, which is the failure mode worth spending code to prevent.
             self.log(f"Chain stopped: {len(self._queue)} remaining step(s) skipped.")
             self._queue = []
-
-        if self._batch_queue_active:
-            status = "Stopped" if self._queue_cancelled else ("Failed" if code else "Completed")
-            if code or self._queue_cancelled or self._running_training:
-                self.run_queue.mark(self._active_queue_index, status)
-            if not self._queue:
-                self._batch_queue_active = False
-                self.run_queue.end("Queue completed." if status == "Completed" else f"Queue {status.lower()}.")
-                self._active_queue_index = None
-        self.start_btn.setVisible(not bool(self._queue))
-        self.stop_btn.setVisible(bool(self._queue))
         self._refresh()
-
         if self._queue:
-            # `_run` refuses to start while a runner is live, so this waits for the next event-loop
-            # turn -- `self.runner` is already None above, but the QThread it referred to is still
-            # finishing.
-            nxt = self._queue.pop(0)
-            generation = self._queue_generation
-            QtCore.QTimer.singleShot(
-                0, lambda: self._run_job(nxt) if generation == self._queue_generation else None)
+            self._schedule_next_job()
 
     def _start(self):
         if self.pipeline_chk.isChecked():
@@ -1204,15 +1275,11 @@ class TrainingGUI(QtWidgets.QWidget):
         if self.runner is not None and self.runner.isRunning():
             self.runner.stop()
         elif self._batch_queue_active:
-            self._batch_queue_active = False
             if (self._active_queue_index is not None and
-                    self.run_queue.list.item(self._active_queue_index).text().startswith(("Caching —", "Training —"))):
+                    self.run_queue.entry(self._active_queue_index).status in ("Caching", "Training")):
                 self.run_queue.mark(self._active_queue_index, "Stopped")
-            self.run_queue.end("Queue stopped.")
-            self._active_queue_index = None
-            self.start_btn.setVisible(True)
-            self.stop_btn.setVisible(False)
-            self._refresh()
+            self._end_batch("Queue stopped.")
+        self._refresh()
 
     def _dataset_paths(self, flat: dict) -> list[str]:
         """Every directory this config actually reads images from, in config order.

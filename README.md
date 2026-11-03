@@ -184,18 +184,21 @@ an unset folder uses the repository's `configs/` directory as before.
 
 ### Queue several training configs
 
-Open **Run Queue**, choose **Add TOMLs**, then drag rows or use **Move up/down** to
-set their order. **Remove selected** removes the selected entries. **Start queue**
-validates all configs, then caches and trains each sequentially using the selected
-GPUs. The saved TOMLs are used directly; unsaved editor changes are not included,
-and relative paths resolve from the trainer directory. Give each run a distinct
-output directory/run name. Config files are not rewritten.
+Use **Save & add to queue** to validate and save the current editor settings,
+even with Autosave off, or **Run Queue → Add TOMLs** for existing files. Each entry
+keeps a separate snapshot; later edits to the source file do not change it.
+**Start queue** validates, caches and trains configs sequentially using the selected
+GPUs. Give each run a distinct output directory/run name. Relative paths resolve
+from the trainer directory.
 
-Row statuses show caching, training, completion, failure, or skipped runs. An error
-stops the remaining queue; **Stop** stops the current process and cancels later
-runs. Editing a queued file after validation stops that queue before its next
-step; restart the queue to use the edited file. The queue is kept for the current
-GUI session, not restored after an application restart.
+Add entries while running and use **Move up/down**, **Remove selected**, or
+**Clear pending** to edit pending jobs. The active job is protected. Errors stop
+the queue by default; enable **Continue queue after errors** before starting to
+skip failed configs. A failed cache always skips that config's training, and
+**Stop** always cancels the remaining jobs. Select failed entries to inspect their
+errors or use **Retry selected** to retry their saved settings. To change those
+settings, remove the entry and add the edited config again. The queue and its
+snapshots last for the current GUI session.
 
 **Live Metrics** shows elapsed training time in `HH:MM:SS`, updating even while
 graphs are paused or cleared and preserving the final duration after exit. It is
