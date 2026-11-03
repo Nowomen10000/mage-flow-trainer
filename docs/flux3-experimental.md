@@ -1,9 +1,12 @@
-# Experimental Flux3 training
+# FLUX.3 training — Tier 3
 
 The trainer can load the native **BF16 Flux 3 Image Klein Base** package and train
 text-to-image adapters or full transformer weights. This is an initial integration;
 short smoke tests do not establish convergence or generation quality. Image editing/reference inputs and distilled
 flow-map checkpoints are not supported.
+
+**Limited support.** MOSS-Image is BluFlow-Trainer's primary target. FLUX.3 has
+lower maintenance priority and may be discontinued or removed later.
 
 ## Configuration
 

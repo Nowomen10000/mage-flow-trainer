@@ -163,7 +163,7 @@ class Trainer:
             mixed_precision="no",
             dynamo_plugin=self._dynamo_plugin(),
         )
-        if (cfg.quant.mode == "training" or cfg.quant.backend == "convrot") and self.accelerator.num_processes > 1:
+        if (cfg.quant.mode == "training" or cfg.quant.backend == "convrot" or cfg.quant.frozen_matmul) and self.accelerator.num_processes > 1:
             from .distributed import configure_quantized_ddp
             self.accelerator.ddp_handler = configure_quantized_ddp()
         # Rank-local global RNG still serves dropout and other model operations.
@@ -501,7 +501,7 @@ class Trainer:
 
     def _prepare(self):
         raw_optimizer = self.optimizer
-        if (self.cfg.quant.mode == "training" or self.cfg.quant.backend == "convrot") and self.accelerator.num_processes > 1:
+        if (self.cfg.quant.mode == "training" or self.cfg.quant.backend == "convrot" or self.cfg.quant.frozen_matmul) and self.accelerator.num_processes > 1:
             from .distributed import sync_quantized_model
             sync_quantized_model(self.transformer)
         if self.text_encoder is not None:
@@ -1193,7 +1193,11 @@ class Trainer:
         if self.quant_info is not None:
             nq, ntotal, use_qmm, max_tokens, wmean = self.quant_info
             how = "auto" if cfg.quant.use_quantized_matmul == "auto" else "explicit"
-            if cfg.quant.backend == "convrot":
+            if cfg.quant.frozen_matmul:
+                rotation = "Hadamard group 256" if cfg.quant.use_hadamard else "no rotation"
+                print(f"quant    {cfg.quant.preset}: frozen INT8 storage + INT8 matmul, "
+                      f"{nq}/{ntotal} Linear quantized; {rotation}; BF16 adapters/attention")
+            elif cfg.quant.backend == "convrot":
                 print(f"quant    ConvRot frozen/int8, {nq}/{ntotal} Linear quantized, "
                       f"skip={cfg.quant.skip_policy}; INT8 matmul ON, rotation group 256")
             else:

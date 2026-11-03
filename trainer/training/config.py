@@ -386,6 +386,25 @@ def validate_model_options(cfg):
         raise ValueError('Eye adversarial experiment requires dedicated eye examples and perceptual.weight=0 (LPIPS off)')
     from ..modeling.loader import resolve_model_family
     cfg.train.model_family = resolve_model_family(cfg.train.model_path, cfg.train.model_family)
+    if cfg.quant.preset != "custom" and (
+            cfg.train.model_family != "moss_image" or not cfg.is_lora
+            or cfg.train.dtype != "bfloat16"):
+        raise ValueError("Quantization presets require MOSS BF16 adapter training; "
+                         "use quant.preset='custom' for full finetuning or other models")
+    if cfg.quant.frozen_matmul:
+        if (cfg.train.model_family != "moss_image" or cfg.train.dtype != "bfloat16"
+                or cfg.adapter.kind != "lycoris_lora" or cfg.adapter.lycoris_algo != "locon"
+                or not cfg.adapter.lycoris_bypass or cfg.adapter.dtype != "bfloat16"
+                or cfg.adapter.init != "random" or cfg.quant.weights_dtype != "int8"
+                or cfg.quant.group_size != -1 or cfg.quant.use_stochastic_rounding
+                or cfg.quant.dynamic_loss_threshold is not None):
+            raise ValueError("Frozen SDNQ INT8 matmul input-gradient path requires MOSS BF16 "
+                             "LyCORIS LoCon, BF16 adapters, bypass and random initialization, "
+                             "INT8 weights, group_size=-1, stochastic rounding off and no dynamic "
+                             "loss threshold. Choose quant.preset='balanced' or 'fast' for the "
+                             "quantization settings, or disable quantized matmul.")
+    if cfg.quant.use_hadamard and not cfg.quant.frozen_matmul:
+        raise ValueError("quant.use_hadamard currently requires the frozen MOSS INT8 matmul path")
     if cfg.train.moss_qkv_format == 'fused':
         if cfg.train.model_family != 'moss_image':
             raise ValueError("Fused QKV export is only supported for MOSS-Image")
@@ -403,9 +422,9 @@ def validate_model_options(cfg):
         cfg.train.flux2_vae = True
         if (cfg.flow.dual_timestep or cfg.self_flow.enabled or cfg.rti.enabled or
             cfg.perceptual.enabled or cfg.adversarial.enabled or cfg.preserve.enabled or cfg.curriculum.phases):
-            raise ValueError('Experimental Flux3/MOSS supports text-to-image flow training without RTI, Self-Flow, dual timestep, decoded losses or curricula')
+            raise ValueError('Flux3/MOSS supports text-to-image flow training without RTI, Self-Flow, dual timestep, decoded losses or curricula')
         if cfg.train.attention_backend not in ('sdpa', 'torch_varlen') or cfg.train.checkpoint_blocks is not None:
-            raise ValueError('Experimental Flux3/MOSS requires SDPA or torch_varlen and all-block checkpointing')
+            raise ValueError('Flux3/MOSS requires SDPA or torch_varlen and all-block checkpointing')
         if cfg.train.compile_text_encoder or cfg.train.text_encoder_embedding_only:
             raise ValueError('Flux3/MOSS text extraction requires compile_text_encoder=false and text_encoder_embedding_only=false')
     if cfg.perceptual.enabled:
@@ -570,12 +589,6 @@ def load_config(path: str | Path) -> Config:
     if cfg.optimizer.kind.startswith("optimi_") and cfg.quant.mode == "training":
         raise ValueError("Optimi does not yet support SDNQ training tensors. Use quant.mode='none' "
                          "for full finetuning, or 'frozen' for adapters.")
-    if (cfg.quant.backend == "sdnq" and cfg.quant.mode == "frozen"
-            and cfg.quant.use_quantized_matmul is True):
-        raise ValueError(
-            "Frozen SDNQ quantized matmul has no supported input-gradient path for adapters. "
-            "Set quant.use_quantized_matmul=false (or 'auto') for storage-only quantization."
-        )
     if cfg.quant.mode == "frozen" and not cfg.is_lora:
         # A frozen-quantized base has no trainable weights at all, so this would run and produce
         # nothing. Caught here rather than after the model loads.

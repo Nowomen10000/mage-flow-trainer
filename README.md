@@ -1,304 +1,283 @@
-# Mage-Flow trainer
+# BluFlow-Trainer
 
-Train Mage-Flow adapters or finetune the full transformer through the GUI or CLI, with native model weights, native-resolution attention, and frozen Qwen3-VL text conditioning. Adapted from `diffusion-pipe-mageflow-ft` commit `40bf63a`, without requiring that checkout or DeepSpeed at runtime.
+**MOSS-Image LoRA, LyCORIS, and full-model training, with a desktop GUI and CLI.**
+Train with BF16 weights or SDNQ quantization, cache Qwen text embeddings to free
+VRAM, and use aspect-ratio buckets or multiple resolution tiers in the same run.
 
-## Why use this trainer?
+Formerly `mage-flow-trainer`. Existing TOMLs, caches, launch commands, and the
+`trainer` Python module remain compatible. The repository now lives at
+[bluvoll/BluFlow-Trainer](https://github.com/bluvoll/BluFlow-Trainer).
 
-- **Native SDNQ integration:** train the full transformer with INT8 weight storage, or keep frozen base weights in INT8 while training adapters. Quantized optimizer state and state offloading are separate options. AdaLN is excluded from LoRA training.
-- **Caption augmentation without a resident text encoder:** precompute configurable caption variations into a persistent SQLite cache, then unload the encoder for training. Shuffle tags, drop tags, and mix tags with natural-language captions while trading storage for VRAM.
-- **Native-resolution training:** cached Mage-VAE latents, aspect-ratio buckets, packed sequences, and PyTorch's built-in `torch_varlen` attention. No artificial 2048-pixel maximum.
-- **Adapter choices:** PEFT LoRA and LyCORIS LoCon, LoKr (including configurable factor), and DoRA. LyCORIS supports compilation; LoCon/LoKr default to bypass, and DoRA uses weight decomposition on output.
-- **Practical controls:** GUI configuration, gradient checkpointing, `torch.compile`, single-GPU or distributed training, adapter export, and resumable caches.
+[Start training](#start-training-moss-image) · [Model files](#moss-model-files) ·
+[Multi-resolution](#datasets-and-multi-resolution) · [GUI and queue](#gui-and-training-queue) ·
+[Support tiers](#model-support-tiers) · [Documentation](#documentation)
 
-Experimental decoded-loss tools include [LPIPS](docs/decoded-perceptual-loss.md)
-and an [eye-local adversarial loss](docs/eye-adversarial-loss.md), through a frozen
-FLUX.2/VSF3 decoder. These are research options, not established eye-quality fixes;
-the tested LPIPS variants did not improve the Houki portrait comparisons.
+## What it supports
 
-## SDNQ and consumer hardware
+- **MOSS-Image Base/SFT:** PEFT LoRA, LyCORIS LoCon/LoKr/DoRA, and full finetuning.
+- **Memory controls:** SDNQ INT8/UINT8 weight storage, independent text-encoder
+  quantization, gradient checkpointing, and optional optimizer-state quantization/offload.
+- **Cached conditioning:** reusable image latents and SQLite caption embeddings,
+  including precomputed tag/caption variations. The text encoder is released before training.
+- **Flexible batching:** aspect-ratio buckets, multi-resolution datasets with
+  per-tier batch sizes, or packed `torch_varlen` attention across resolutions.
+- **Training controls:** `torch.compile`, single-GPU training, Linux DDP,
+  timestep-distribution previews, and optional HF/paired-texture losses.
+- **GUI workflow:** editable TOMLs, dataset subsets, live metrics, a training queue,
+  and MOSS fused/separated QKV export.
 
-Training-mode INT8/UINT8 uses a compatibility fix for small-update preservation
-with stochastic rounding. See the [rounding diagnosis and validation](docs/sdnq-integer-update-rounding.md)
-before reusing learning rates from older quantized finetunes.
+## Start training MOSS-Image
 
-**For full-model finetuning on the 24 GB consumer GPUs targeted here, treat SDNQ as a practical requirement.** Updating 4.116 billion parameters requires space for weights, gradients, optimizer state, and activations. Use SDNQ **training mode**, INT8 weights, and a **Cached Text Encoder**; optimizer-state quantization and CPU offloading may also be necessary. Offloading shifts memory pressure to system RAM, so SDNQ alone does not guarantee that a configuration fits. Our [full-model smoke test](docs/bisque-finetune-smoke.md) used quantized, CPU-offloaded optimizer states.
+### 1. Install and launch
 
-**LoRA benefits less from SDNQ, but the savings are still welcome.** Only the small adapter is updated, so base-model gradients and optimizer states are already absent. SDNQ **frozen mode** reduces the base weights' VRAM footprint, leaving more room for image resolution or batch size. It is optional for LoRA when the unquantized model fits. Full finetuning without SDNQ remains supported for hardware with sufficient memory.
-
-An [experimental compressed-modulation variant](docs/compressed-modulation.md) reduces the large block AdaLN projections while keeping them trainable. Use the dedicated [Load Compressed Mage-Flow custom node](https://github.com/bluvoll/ComfyUI-MageFlow-Compressed) for ComfyUI inference. It does not change ordinary Mage-Flow checkpoints or ComfyUI's built-in loaders.
-
-## Experimental FLUX.3 Image Klein Base support
-
-The GUI and CLI also support **FLUX.3 Image Klein Base** text-to-image adapters
-and full finetuning, with native BF16 checkpoints, SDNQ UINT8 weight storage,
-Cached Text Encoder embeddings, gradient checkpointing, compilation, and packed
-`torch_varlen` attention. SDPA remains available. Reference-image editing and
-distilled flow-map checkpoints are not supported.
-
-**Support may be temporary.** Mage-Flow remains this trainer's primary focus.
-If FLUX.3 Klein sees little adoption or is abandoned by the open-source community,
-its experimental support may be discontinued or removed. Long-term maintenance
-is not guaranteed.
-
-Start with the [full-finetuning preset](configs/flux3-finetune-experimental.toml)
-or [LoCon preset](configs/flux3-locon-experimental.toml), set your dataset/model
-paths, and select `flux3` as the model family in the GUI. Cache latents with the
-Flux3 package's own VAE; Mage-VAE and VSF3 caches are not interchangeable.
-
-A **10-update test on two RTX 4090s**, at **512px and batch 2 per GPU**, completed
-full text-to-image finetuning with UINT8 SDNQ, Adafactor, checkpointing, compile,
-and varlen attention, **without CPU offload**:
-
-| GPU | Peak allocated | Peak reserved |
-|---|---:|---:|
-| GPU 0 | 17.27 GiB | 17.45 GiB |
-| GPU 1 | 17.30 GiB | 17.51 GiB |
-
-Effective batch was 4, with a median **2.93 seconds/update** after the first step.
-This controlled test repeated one cached image with an 80-token caption and
-excluded checkpoint saving. It demonstrates execution and memory feasibility,
-not convergence or a memory guarantee for other datasets.
-
-Flux3 concatenates eight Qwen hidden layers into **20,480 features per token**.
-BF16 cached embeddings cost **40 KiB per retained token** (20 MiB for a 512-token
-caption, per unique variation). The finetuning preset caps text at **128 tokens**
-to match the memory tests; raise `train.max_text_tokens` if captions are longer,
-allowing for additional cache storage and VRAM.
-
-See the [Flux3 guide](docs/flux3-experimental.md) for model layout, limitations,
-validation, and licensing details.
-
-## Experimental MOSS-Image support
-
-**Support may be temporary.** Mage-Flow remains this trainer's primary focus.
-If MOSS-Image sees little adoption or is abandoned by the open-source community,
-its experimental support may be discontinued or removed. Long-term maintenance
-is not guaranteed.
-
-Native **MOSS-Image Base/SFT** supports full finetuning and PEFT/LyCORIS adapters,
-SDNQ UINT8, Cached Text Encoder embeddings, packed `torch_varlen`, checkpointing,
-compile, and GUI configuration. The 5.082B single-stream transformer uses shared
-modulation and Qwen3.5-9B final-layer conditioning. Its packaged FLUX.2 VAE has
-an /8 encoder and a smaller decoder; latent packing gives an effective /16 stride.
-Use fresh latent caches with that VAE.
-
-MOSS RMSNorm now combines gradient branches in FP32 before rounding to BF16.
-Checkpointing is captured inside compiled main blocks; text-refinement blocks
-stay eager. These corrections affect the training trajectory.
-
-**Method → Adapter → Train MOSS text-refinement adapters** controls adaptation
-of caption features inside the transformer. Disable it to train only main blocks.
-`adapter.moss_train_text_refiner` defaults to `true` for existing configs; keep it
-unchanged when resuming. Qwen and cached text embeddings are unaffected.
-
-Under **Training → Checkpoints**, **MOSS Q/K/V saving format** defaults to fused
-for full finetunes and plain LoRA/LoCon; separated remains selectable. Other models
-and LoKr/DoRA keep their native layout. Fused LoRA/LoCon exports support loaders that expect
-fused QKV, including the audited Forge loader. Convert an existing adapter with
-`python lora_qkv_convert.py model.safetensors --format fused`, or launch
-`python lora_qkv_convert.py` for a small GUI. It saves a new copy with the same
-effective updates; fused adapters can be larger. See the
-[export guide](docs/moss-image-experimental.md#qkv-saving-format-and-existing-loras).
-
-For an experimental **MOSS LoCon ConvRot** comparison, install the optional kernels
-in the trainer environment (`uv sync --extra gui --extra convrot`, or
-`uv pip install --python .venv/bin/python comfy-kitchen==0.2.37`). Select
-**Transformer quantization backend → ConvRot INT8 (experimental)** in the GUI,
-with frozen mode, BF16 training/adapters, and LyCORIS LoCon bypass enabled.
-Start from native BF16 MOSS weights: the trainer applies per-channel INT8
-quantization with a 256-wide rotation, INT8 forward matmul and BF16 attention.
-The adapter remains in the original weight basis and exports normally.
-Text-encoder quantization and the optimizer remain independent SDNQ options.
-SDNQ transformer storage dtype, matmul, group size and rounding controls do not
-configure ConvRot. Full finetuning and other adapter algorithms are currently
-rejected. This is an experimental speed/quality tradeoff, not lossless training.
-
-Start with the [finetuning preset](configs/moss-image-finetune-experimental.toml)
-or [LoCon preset](configs/moss-image-locon-experimental.toml), both defaulting to
-1024px. Replace dataset and model paths. The [MOSS guide](docs/moss-image-experimental.md) documents the
-supported checkpoint layout, validation, sampling choices, and limitations.
-A ten-update 512px DDP full-finetune test at batch 1 per GPU peaked at **15.72 GiB
-allocated per RTX 4090**, using cached short captions, UINT8 SDNQ, Adafactor,
-checkpointing and compile, without CPU offload. This is experimental support;
-smoke tests do not establish image quality or memory needs for longer captions.
-
-## Start training
-
-For a fresh environment, use `./install.sh` or `install.bat`. The tested environment uses PyTorch 2.10.0 + CUDA 12.8; dependencies are recorded in `uv.lock` and `requirements.txt`.
-
-SDNQ is pinned to **0.2.4**, the version used to validate the trainer's optimizer
-defaults and compatibility patches. Newer releases require separate validation.
-If an existing environment installed a different release, activate that environment
-and run `python -m pip install "sdnq==0.2.4" --no-deps`, then restart the trainer.
-Check the installed version with
-`python -c "from importlib.metadata import version; print(version('sdnq'))"`.
-
-### GUI
-
-<a href="docs/images/trainer-gui.png"><img src="docs/images/trainer-gui.png" alt="Mage-Flow Trainer GUI showing model selection, batching, compilation, checkpoints, and training controls" width="960"></a>
-
-*Training tab with the LyCORIS cached-text preset. Click the screenshot for full size.*
-
-The GUI uses the same TOML configuration and training backend as the CLI. Launch it with `./start-gui.sh` on Linux or `start-gui.bat` on Windows after installation. To use this checkout's existing environment directly:
+Clone the repository, then run the installer for your platform:
 
 ```bash
-.venv/bin/python -m trainer.gui
+git clone https://github.com/bluvoll/BluFlow-Trainer.git
+cd BluFlow-Trainer
 ```
 
-At startup the GUI checks the current Git branch's configured upstream for updates,
-including when running from a fork. If behind, it offers a fast-forward-only pull;
-choosing No starts the current version. Local tracked edits or divergent commits
-require a manual update. Missing Git, no upstream, or an unavailable network skips
-the Git check and allows startup to continue. Accepting an update also refreshes the
-active venv when `requirements.txt`, `pyproject.toml`, or `uv.lock` differs from its
-last successful dependency installation. This includes pinned Git revisions such
-as LyCORIS. With `uv`, the updater uses the lockfile and keeps additional packages;
-otherwise it installs the pinned requirements with the venv's own Python/pip.
-An independent launcher waits for the startup GUI process to exit completely
-before installing packages (releasing Qt DLLs on Windows), then reopens it on
-success. Installation output stays in the launcher's console.
-Failures stop startup, retain a retryable state, and write
-`.mageflow-trainer-update.log` inside the venv.
+| Platform | Install | Launch GUI |
+|---|---|---|
+| Linux | `./install.sh` | `./start-gui.sh` |
+| Windows | `install.bat` | `start-gui.bat` |
 
-Manual pulls and existing venvs without a recorded dependency installation prompt
-once for a package refresh too. Choose No to continue with existing packages.
-The normal installers record their successful environment setup. This checks file
-contents, not timestamps; it does not reinstall packages on every launch or modify
-global Python. `--no-update-check` skips Git checking; `--no-dependency-check`
-skips the package check. Both flags work through the launch scripts.
+The installers create `venv/`. The tested stack uses **PyTorch 2.10.0 + CUDA 12.8**;
+pinned packages and Git revisions are recorded in `uv.lock` and `requirements.txt`.
+**SDNQ stays pinned to 0.2.4** until newer versions are validated.
 
-The config picker lists TOMLs by last modification time, newest first. **Autosave**
-beside the run name defaults to on and saves the form when you press Start; editing
-alone does not save. Turning it off uses a temporary launch TOML without changing
-saved configs. Save and Save As remain available, and the trainer still records its
-run configuration with the training output. Queued runs use their selected TOMLs.
+To launch from an already configured environment, use `python -m trainer.gui`.
+Run CLI commands below with that environment activated, or substitute its Python
+executable (`venv/bin/python` on Linux, `venv\Scripts\python.exe` on Windows).
 
-Section headers collapse and expand without changing settings; each settings tab
-also has Expand all / Collapse all. These choices and the autosave toggle are
-remembered in the per-user `mage-flow-trainer/gui.json` preference file (under the
-OS configuration folder, normally `~/.config` on Linux or `%LOCALAPPDATA%` on Windows).
-**Preferences** lets you choose a TOML save folder. Alternatively, set it once at
-launch with `python -m trainer.gui --config-dir "path/to/my configs"`. The picker
-then lists that folder; existing TOMLs are not moved. A missing preference file or
-an unset folder uses the repository's `configs/` directory as before.
+### 2. Choose a preset
 
-### Queue several training configs
+| Goal | Preset | Base-weight storage |
+|---|---|---|
+| Train a LoCon adapter | [MOSS LoCon](configs/moss-image-locon-experimental.toml) | Frozen SDNQ UINT8 |
+| Finetune the transformer | [MOSS full finetune](configs/moss-image-finetune-experimental.toml) | Training-mode SDNQ UINT8 |
 
-Use **Save & add to queue** to validate and save the current editor settings,
-even with Autosave off, or **Run Queue → Add TOMLs** for existing files. Each entry
-keeps a separate snapshot; later edits to the source file do not change it.
-**Start queue** validates, caches and trains configs sequentially using the selected
-GPUs. Give each run a distinct output directory/run name. Relative paths resolve
-from the trainer directory.
+Both presets use **1024px**, batch size 1, cached text, checkpointing, and compilation.
+Their filenames retain the historical `experimental` suffix for compatibility;
+**MOSS itself has first-class support**. Treat their learning rate and duration as
+starting settings to adjust for your dataset and optimizer.
 
-Add entries while running and use **Move up/down**, **Remove selected**, or
-**Clear pending** to edit pending jobs. The active job is protected. Errors stop
-the queue by default; enable **Continue queue after errors** before starting to
-skip failed configs. A failed cache always skips that config's training, and
-**Stop** always cancels the remaining jobs. Select failed entries to inspect their
-errors or use **Retry selected** to retry their saved settings. To change those
-settings, remove the entry and add the edited config again. The queue and its
-snapshots last for the current GUI session.
+### 3. Configure and train
 
-**Live Metrics** shows elapsed training time in `HH:MM:SS`, updating even while
-graphs are paused or cleared and preserving the final duration after exit. It is
-wall time for the current training process, including model loading, text caching,
-compilation and saves. Separate latent-cache jobs are excluded. Each queued or
-resumed training process starts a new clock; prior sessions are not accumulated.
+1. Load a MOSS preset in the GUI and choose a unique run name. Select
+   **MOSS-Image (Tier 1)** and set the model package or separate component files.
+2. Set the dataset folder containing images and matching `.txt` captions. Choose
+   resolution and batch size, then use **Cache latents** with the selected MOSS VAE.
+3. Choose the adapter or finetuning method. SDNQ uses **frozen** mode for adapters
+   and **training** mode for full finetuning. Adapters leave modulation/AdaLN frozen.
+4. Keep **Cache text embeddings** enabled. Start with text-cache batch size 1;
+   enable text-encoder quantization if the Qwen encoder does not fit. Set caption
+   augmentation before building the cache.
+5. Select GPU(s) and press **Start Training**. The trainer builds missing text
+   embeddings automatically. Multi-GPU training is supported on Linux;
+   the Windows GUI uses one selected GPU.
 
-For a single run:
+For the CLI, copy either preset to `configs/my-moss-run.toml`, edit its paths and
+training settings, then run from the repository directory:
 
-1. Load a preset and choose a run name. Under **Model / Output**, select a Diffusers directory or separate transformer, text encoder, and VAE files.
-2. Set your dataset folder and resolution, then use **Cache latents** to prepare images for training from cached latents.
-3. In **Method**, choose PEFT LoRA, LyCORIS LoCon/LoKr/DoRA, or full finetuning. Configure SDNQ for that mode. Full finetuning exposes **Train AdaLN**; adapters always leave AdaLN frozen.
-4. Enable **Cache text embeddings** and set **Caption variations per image** above zero for augmented caching. Choose caption augmentation settings before starting; the trainer prepares missing embeddings automatically.
-5. Select the GPU(s), check batch size and training duration, and click **Start Training**. Multi-GPU training is available on Linux; Windows uses one selected GPU. The GUI displays progress and logs, and **Save / Save As** writes a TOML config you can also run from the CLI.
+```bash
+python -m trainer.tools.cache_latents cache-config configs/my-moss-run.toml --batch-size 1
+python -m trainer.training.train configs/my-moss-run.toml
+```
 
-Adding dataset subset rows disables the single dataset folder and its repeat count;
-remove all rows to restore them. Subsets replace the single-folder source.
+`cache-config` uses the TOML's model/VAE, subsets, and resolution tiers. The
+presets read cached latents during training, so complete latent caching first.
+See the [MOSS guide](docs/moss-image-experimental.md) for loading and training details.
 
-**Enable advanced experimental features** reveals an Experimental tab for Self-Flow,
-dual-timestep noising, RTI (Region Token Interface), decoded perceptual/eye LPIPS
-supervision, and eye adversarial loss. Revealing the tab does not activate a loss.
-Configs with an active experiment reveal it automatically; disable those features
-before hiding the tab. This visibility toggle does not change saved training settings.
+## MOSS model files
 
-### Compiled Loaded Text Encoder
+MOSS uses a **5.082B transformer**, **Qwen3.5-9B** text conditioning, and its packaged
+**FLUX.2 VAE with a small decoder**. Its /8 encoder output is packed and normalized
+into the transformer's /16 latent layout. Use the VAE matching your base model;
+Mage-VAE and VSF3 caches are not interchangeable with MOSS caches.
 
-Qwen3 compilation is independent of Mage-Flow compilation and quantization.
-To keep Qwen3 in BF16 while using SDNQ for the transformer, merge these
-settings into your existing config:
+Point `train.model_path` at a package containing `transformer/`, `text_encoder/`,
+`tokenizer/`, and `vae/`, or select separate files under **Model / Output**:
 
 ```toml
 [train]
+model_family = "moss_image"
+transformer_path = "/path/to/moss_image_base_bf16.safetensors"
+text_encoder_path = "/path/to/qwen3.5_9b_bf16.safetensors"
+vae_path = "/path/to/flux2-vae-smalldecoder.safetensors"
+```
+
+The standard MOSS architecture configs and tokenizer are bundled, so separate
+component files do not require a full Diffusers directory. A model package or
+explicit `tokenizer_path` can supply the tokenizer instead.
+
+Use **native BF16 transformer weights** as the source for SDNQ quantization.
+Unquantized fused-QKV exports are also accepted and split during loading.
+Prequantized inference transformer exports are not training sources.
+The text loader accepts supported standalone Qwen quantizations, including
+Comfy INT8/ConvRot, but dequantizes them during loading. Enable the trainer's
+text-encoder quantization separately to reduce resident encoder memory.
+See [supported loaders and formats](docs/moss-image-experimental.md#start).
+
+## MOSS LoRA quantization presets
+
+In the GUI, open **Quantization → MOSS adapter preset**:
+
+| Preset | Frozen base computation | Choose it for |
+|---|---|---|
+| **Standard** | UINT8 storage, BF16 matmul | The established storage-only baseline; speed is secondary. |
+| **Balanced** | INT8 storage and matmul, Hadamard rotation (group 256) | Faster training with rotation intended to limit quantization error. |
+| **Fast** | INT8 storage and matmul, no rotation | The fastest measured option; it may learn slightly differently. |
+| **Custom** | Your explicit quantization settings | Existing configs, unquantized training, or full finetuning. |
+
+All three produced usable, closely matched LoRAs in our MOSS tests. **These names
+are not a proven visual-quality ranking**; results can vary by dataset. Standard
+retains BF16 matmul. Balanced/Fast also quantize matmul inputs and the frozen
+base's input-gradient computation; adapters and attention remain BF16.
+
+On an RTX 4090, a matched 1024px Tangobat LoCon test (rank/alpha 16, batch 1,
+accumulation 2, cached text, checkpointing and compile) averaged **3.152 / 2.590 /
+2.520 seconds per optimizer update** for Standard/Balanced/Fast. These are 639
+updates from epochs 2–10, excluding the first epoch. Fast was about **2.8% higher
+throughput than Balanced**. The older Standard run slowed midway, so its roughly
+25% throughput comparison is less controlled. These are separate runs, not a
+hardware-independent speed guarantee.
+
+For CLI training, set the preset in your existing TOML and launch normally:
+
+```toml
+[quant]
+preset = "balanced"  # "standard", "balanced", "fast", or "custom"
+```
+
+```bash
+python -m trainer.training.train configs/my-moss-locon.toml
+```
+
+The presets require **MOSS BF16 adapter training**. Balanced/Fast currently require
+**LyCORIS LoCon, BF16 adapter dtype, bypass enabled, and random initialization**:
+
+```toml
+[train]
+model_family = "moss_image"
 dtype = "bfloat16"
-cache_text_embeddings = false
-compile_text_encoder = true
-text_encoder_embedding_only = true
+
+[adapter]
+kind = "lycoris_lora"
+lycoris_algo = "locon"
+dtype = "bfloat16"
+lycoris_bypass = true
+init = "random"
+```
+
+Use native BF16 source transformer weights. SDNQ **0.2.4** performs quantization;
+Balanced/Fast do **not** require ComfyUI or Comfy Kitchen. They support frozen-base
+adapter training, **not full finetuning**. The GUI and CLI reject unsupported
+combinations before loading the model.
+
+Presets override mode, backend, weight dtype, matmul, rotation, group size,
+stochastic rounding, and dynamic loss threshold; the GUI locks those fields.
+Switch to Custom to edit them. Omitted `preset` means Custom, so existing TOMLs
+keep their settings and `use_quantized_matmul = "auto"` still means off.
+The preset and resolved settings are saved in checkpoint metadata.
+
+Text-encoder and optimizer quantization remain separate. To keep cached text
+embeddings from changing storage dtype when switching presets, select an explicit
+text-encoder storage dtype rather than **Inherit**. Changes to other inherited
+encoder quantization settings can still require a cache rebuild. No preset
+automatically enables text-encoder quantization.
+
+## Memory and text caching
+
+For adapter training, frozen SDNQ storage reduces base-weight memory while the
+adapter remains trainable. BF16 base weights are supported when they fit.
+Full finetuning also needs gradients and optimizer state; training-mode SDNQ,
+checkpointing, and cached conditioning are useful on 24 GB GPUs. Optimizer-state
+quantization and CPU offload are separate settings, and offload consumes system RAM.
+
+**Text caching is a separate memory phase.** Qwen3.5-9B text weights alone occupy
+roughly 15 GiB in BF16. Unloading it after caching helps training memory, but does
+not make the initial encoding step fit a smaller GPU. For lower caching memory,
+use **Quantize the text encoder**, **uint8**, and **Text cache batch size = 1**.
+Starting from original BF16 weights avoids stacking another quantization pass on
+an already lossy source. Quantization can change the resulting embeddings.
+
+```toml
+[train]
+cache_text_embeddings = true
+caption_variations = 1
+text_cache_batch_size = 1
 
 [quant]
-quantize_text_encoder = false
-# Keep your transformer's existing mode and weights_dtype settings.
+quantize_text_encoder = true
+text_encoder_weights_dtype = "uint8"
 ```
 
-In the GUI, disable **Cache text embeddings**, enable **Compile Loaded Text
-Encoder** and **Loaded Text Encoder: embedding-only output** under
-**torch.compile**, and disable text encoder quantization under SDNQ. Restart
-an already-open GUI to see the new controls. Both new options default to false
-and apply only to the Loaded Text Encoder; cache generation is unchanged.
+These are overrides to a preset, not a complete config. `caption_variations > 0`
+uses a persistent SQLite cache; it controls augmentation attempts per image,
+not a guarantee of distinct captions. Increase it when using caption/tag
+augmentation. Zero selects fixed-caption RAM caching and requires augmentation off.
+Exact caption matches share embeddings. A complete compatible SQLite cache skips
+loading the encoder on later runs; changing encoder settings can require new entries.
 
-Compilation uses dynamic decoder blocks and adds startup overhead. The
-embedding-only path skips unused outputs and verifies equivalence with the
-original wrapper on the first batch; an incompatible Transformers version
-raises an error with instructions to disable that option. SDNQ encoder
-quantization can also be enabled independently when VRAM is tighter.
-See the [batch-size benchmark](docs/text-encoder-large-batch-benchmark.md)
-for measured speed, memory, and numerical differences on RTX 4090.
+MOSS BF16 text embeddings have **4,096 features per token: 8 KiB/token**, or
+**4 MiB per unique 512-token caption**, before database overhead. Stored FP32
+latents occupy about **2 MiB per 1024² image resolution**. Plan disk space for
+unique captions and resolution variants, not just image count.
+See [caption-cache behavior](docs/caption-variation-cache.md); its older Mage
+storage examples use a different embedding width.
 
-### CLI and model paths
+A short **MOSS full-finetuning DDP test** on two RTX 4090s at **512px, batch 1 per
+GPU** completed ten updates at **15.72 GiB allocated / 16.09 GiB reserved per GPU**,
+using UINT8 SDNQ, Adafactor, cached short captions, checkpointing, and compile,
+without CPU optimizer offload. This repeated one image and excluded checkpoint
+saving; it is not a memory guarantee for the 1024px presets or longer captions.
+See [MOSS validation](docs/moss-image-experimental.md#initial-validation-rtx-4090).
 
-Put the native transformer, Qwen3-VL text encoder/tokenizer, and Mage-VAE under `mage-flow/`, or set `train.model_path`. See the [training guide](docs/training-guide.md) for the expected directory layout and full configuration reference.
+DDP replicates the model on each GPU; two 24 GB cards do not form a single 48 GB
+memory pool. Historical [Mage VRAM](docs/readme-vram-benchmark.md) and
+[batch-size](docs/batch-size-vram-benchmark.md) measurements apply to Mage, not MOSS.
 
-Alternatively, select separate files in the GUI's **Model / Output** group:
+## Datasets and multi-resolution
+
+A single dataset folder or multiple subsets can supply images and captions.
+Adding subset rows in the GUI disables the main folder and repeat count;
+subsets replace that source. Each subset can have its own repeat count.
+
+For multiple resolution tiers with different batch sizes, remove the preset's
+single `dataset.resolution` field and apply these overrides:
 
 ```toml
+[dataset]
+resolutions = [512, 768, 1024]
+max_bucket_reso = 1536
+
 [train]
-transformer_path = "/path/to/magetrail.safetensors"
-text_encoder_path = "/path/to/qwen3vl_4b_bf16.safetensors"
-vae_path = "/path/to/mage-flow-vae.safetensors"
+batch_size = { "512" = 4, "768" = 2, "1024" = 1 }
+pack_resolutions = false
 ```
 
-Each file overrides that component from `model_path`; when all three are supplied, no Diffusers directory is needed. The Qwen3-VL-4B configuration and tokenizer are bundled for offline loading. `tokenizer_path` optionally selects another local tokenizer directory. Native Mage-Flow transformer weights and BF16 Qwen3-VL-4B weights are supported; SDNQ quantization is applied after loading. Changing the text encoder/tokenizer selects a new text-cache namespace, while changing only the transformer leaves text embeddings reusable.
+The batch sizes are examples, not measured capacity limits. Resolutions are
+**area budgets**, not fixed square sizes; `max_bucket_reso` independently caps
+each side. Batch-size keys must match the declared tiers. Cache every tier before
+training. Each tier normally adds another view of each source; images too small
+to produce a distinct larger bucket are handled by the tier-collapse setting.
 
-Cache images with matching `.txt` captions first:
+**Multi-resolution datasets and packed attention are separate choices.**
+`pack_resolutions = true` batches different shapes together and requires one
+integer `batch_size`, rather than a per-tier map. The MOSS presets enable packing
+with `torch_varlen`; set it to false for the per-tier example above. Packing,
+batch size, and accumulation affect optimizer updates per epoch—compare runs by
+updates and samples seen as well as epochs.
 
-```bash
-.venv/bin/python -m trainer.tools.cache_latents cache /path/to/dataset \
-  --model-path mage-flow --resolution 1024 --max-bucket-reso 8192
-```
+## Timestep sampling and detail losses
 
-For a separate VAE, replace `--model-path mage-flow` with `--vae-path /path/to/mage-flow-vae.safetensors`. The GUI passes your selected VAE file to latent caching automatically.
+**Method → Flow Matching** shows a live timestep probability plot. Adjust the
+sampler, sigmoid scale, or shift to preview its distribution. `t=0` is clean and
+`t=1` is pure noise; the plot shows sampling frequency, not loss weighting.
 
-Copy [the benchmark preset](configs/mageflow-readme-benchmark.toml), change `dataset.path` and `train.model_path`, then run:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer.training.train configs/my-run.toml
-```
-
-This preset is derived from `bisque-mageflow-lora-SDQN-AdamW.toml`, with batch size 1, accumulation 1, and a 10-step limit. For a real run, increase/remove `max_steps` and enable checkpoint/final saves. The original local preset uses larger batches and is not the configuration measured below.
-
-## Timestep sampling preview
-
-**Method → Flow Matching** includes a live probability plot. Adjust the sampler,
-sigmoid scale, or shift to see the distribution, median, and fraction of draws at
-`t >= 0.9`. Hover a bar for its probability. `t=0` is clean and `t=1` is pure noise;
-this plot shows sampling frequency, not loss weighting. Resolution-aware shift
-has a preview-only latent grid selector. Curriculum range mapping is not shown.
-
-Choose `moss` for the **Kohaku static MOSS recipe**, independently implemented
-from its probability law. The GUI sets and locks `sigmoid_scale=1`, `shift=1`,
-and `flux_shift=false`. TOML loading rejects conflicting explicit values.
-Existing configurations retain their sampler; this is an opt-in experiment.
+The presets use **logit-normal sampling with shift 1**. The optional `moss`
+sampler implements Kohaku's static MOSS recipe:
 
 ```toml
 [flow]
@@ -306,159 +285,135 @@ timestep_sample_method = "moss"
 shift = 1.0
 sigmoid_scale = 1.0
 flux_shift = false
-moss_mu = -1.09
-moss_std = 0.95
-moss_cutoff = 0.95
-moss_uniform_mix = 0.01
-moss_p_full = 0.0
-moss_steps = 1000
 ```
 
-The MOSS fields above are defaults. `moss_std` controls this sampler's width.
-Its cutoff truncates the underlying inverted logit-normal variable **before
-rescaling onto the full grid**, so returned timesteps still reach `1.0`.
-The uniform mixture adds coverage across the grid; `moss_p_full` optionally adds
-extra mass at pure noise. The final grid bin already has nonzero probability
-when `moss_p_full=0`. This implements the static recipe, not a staged schedule.
+Selecting it locks sigmoid scale and shift in the GUI to prevent a second
+transformation of that distribution; conflicting explicit TOML values are rejected.
+Its defaults are `mu=-1.09`, `std=0.95`, `cutoff=0.95`, a 0.01 uniform mixture,
+and a 1000-step grid. This is the static recipe, not a staged pretraining schedule.
+MOSS's inference shift of 5 does not prescribe the training distribution.
 
-## Dual-timestep noising (experimental)
+Optional **HF loss with SNR gating** and **paired texture loss** are documented
+in the [detail-loss guide](docs/detail-losses.md). They change the objective;
+leave them off when establishing a baseline or comparing trainers.
 
-Enable **Dual-timestep noising** in the GUI's flow settings, or add:
+## Saving and using MOSS adapters
 
-```toml
-[flow]
-dual_timestep = true
-dual_timestep_mask_ratio = 0.25
+**Training → Checkpoints → MOSS Q/K/V saving format** defaults to **fused** for
+full finetunes and plain LoRA/LoCon, for compatibility with inference loaders that
+expect fused QKV. Separated export remains available; LoKr/DoRA retain their
+native layout. Fused LoRA/LoCon files can be larger while representing the same
+updates. Convert an existing adapter without overwriting it:
+
+```bash
+python lora_qkv_convert.py model.safetensors --format fused
 ```
 
-This implements the dual-timestep noising component of
-[Self-Flow](https://arxiv.org/abs/2603.06507): each image receives two sampled
-noise levels, with the second assigned to a random fraction of image tokens.
-Each token is conditioned on its own timestep; text keeps the primary timestep.
-Both draws use your configured timestep distribution, shift and curriculum range.
-The mask ratio must be greater than zero and at most 0.5.
+Running `python lora_qkv_convert.py` without arguments opens its small GUI.
+See the [QKV export guide](docs/moss-image-experimental.md#qkv-saving-format-and-existing-loras).
 
-This noising toggle alone adds no EMA teacher or feature-alignment loss. Cached
-latents and Cached Text Encoder embeddings remain reusable. It works with
-adapters and finetuning, including native-resolution packing, checkpointing and
-the high-frequency loss. Inference and checkpoint weight layouts are unchanged.
-It defaults to off. Faster convergence on Mage-Flow finetunes is a hypothesis
-to evaluate against ordinary training; individual steps are not guaranteed faster.
+**Method → Adapter → Train MOSS text-refinement adapters** controls adaptation of
+caption features inside the transformer. It defaults to on for existing configs;
+disable it to train only the main blocks. It does not train Qwen or modify cached
+embeddings. Keep the setting unchanged when resuming a run.
 
-For an EMA teacher and feature-alignment loss, enable **Method → Experimental
-Self-Flow** in the GUI. It supports full finetuning with configurable batch size,
-mixed-resolution packing, Cached Text Encoder, cached latents and DDP. Mixed EMA
-stores attention/MLP weights in BF16 with stochastic rounding while keeping AdaLN
-EMA in FP32. Inference checkpoints remain native; full resume state includes the
-teacher and training-only projector. See [Self-Flow setup and constraints](docs/self-flow-training.md).
+## GUI and training queue
 
-## Augmented text cache
+<a href="docs/images/trainer-gui.png"><img src="docs/images/trainer-gui.png" alt="BluFlow-Trainer GUI layout with model, batching, compilation, checkpoint, and training controls" width="960"></a>
 
-```toml
-[dataset]
-path = "/path/to/dataset"
-source = "latents"
+*Earlier GUI screenshot; model labels and controls have evolved.*
 
-[train]
-cache_text_embeddings = true
-caption_variations = 5
-text_cache_batch_size = 4 # Captions per GPU per encoding batch; independent of training batch size.
-# Optional; defaults to caption_variations.sqlite alongside the dataset.
-caption_cache_path = ""
-```
+The config picker lists TOMLs **newest first**. **Autosave**, beside the run name,
+is on by default and saves when starting training—not while editing. With it off,
+Start uses a temporary TOML; explicit Save and Save As still work. Settings sections
+can collapse individually, with Expand all / Collapse all on each tab.
 
-The number of variations controls deterministic augmentation attempts per image. Exact caption matches share one embedding, while duplicate selection slots retain their probability. Training cycles through shuffled variation slots across image visits; the cache does not grow with epoch count. Caption dropout uses a shared empty-caption embedding. A complete, compatible cache skips loading the text encoder on subsequent runs.
+Use **Preferences** to choose a TOML save folder, or launch with
+`python -m trainer.gui --config-dir "path/to/my configs"`. Without a saved folder,
+the GUI uses `configs/`. Preferences retain the legacy `mage-flow-trainer/gui.json`
+location under the OS configuration directory so the rename preserves your settings.
 
-Under DDP, missing embeddings are split across all selected GPUs and committed to the shared SQLite cache. The distributed timeout is 60 minutes; cached entries are reusable when changing the number of GPUs.
+**Save & add to queue** validates, saves, and snapshots the current editor settings,
+even when Autosave is off. **Run Queue → Add TOMLs** snapshots existing files.
+Later source-file edits do not change queued settings. Give each run a distinct
+output directory/run name; relative paths resolve from the trainer directory.
 
-Storage depends on the **actual unpadded token count**, not just the number of variations. A BF16 embedding with 2,560 features costs `tokens × 2,560 × 2` bytes. The following projection assumes **200 tokens per unique variation**, no deduplication, one cached image resolution, and excludes SQLite metadata and filesystem overhead.
+You can add runs while training and reorder or remove pending entries; the active
+job is protected. Errors stop the queue by default. Enable **Continue queue after
+errors** before starting to skip failed configs. Failed caching skips that config's
+training, and **Stop** always cancels the remaining jobs. Select a failed entry to
+read its error or **Retry selected** to retry its saved settings. The queue and
+snapshots last for the current GUI session.
 
-| Unique variations per image | Text cache / image | Text + 1024² latent / image | Text cache / 20,000 images |
-| ---: | ---: | ---: | ---: |
-| 1 | 0.98 MiB | 2.98 MiB | 19.07 GiB |
-| 5 | 4.88 MiB | 6.88 MiB | 95.37 GiB |
-| 10 | 9.77 MiB | 11.77 MiB | 190.73 GiB |
-| 25 | 24.41 MiB | 26.41 MiB | 476.84 GiB |
-| 50 | 48.83 MiB | 50.83 MiB | 953.67 GiB |
-| 100 | 97.66 MiB | 99.66 MiB | 1907.35 GiB |
+**Live Metrics** includes total elapsed time for the current training process,
+including loading, text caching, compilation, and saves. Separate latent-cache
+jobs and earlier training sessions are excluded.
 
-Each additional unique 200-token variation adds **0.98 MiB per image**, or **19.07 GiB for 20,000 images**. At 512 tokens, that becomes 2.50 MiB per variation. Exact deduplication reduces the payload; duplicate slots and database overhead still occupy some storage.
+### Updates and dependency repair
 
-FP32 Mage latents have 128 channels at 1/16 spatial resolution: approximately **2 MiB at 1024²**, **8 MiB at 2048²**, **18 MiB at 3072²**, and **32 MiB at 4096²**, once per cached image resolution. See [caption-cache behavior and invalidation](docs/caption-variation-cache.md).
+The launcher checks the current branch's configured upstream, including forks,
+and offers a **fast-forward-only** update. Local tracked edits or divergent commits
+require manual updating; it does not reset or stash them. The old GitHub repository
+URL currently redirects to BluFlow-Trainer.
 
-## Measured VRAM
+The updater checks dependency-file contents **and installed package versions/Git
+revisions**. Accepting repair restores the repository pins in either direction:
+older LyCORIS is updated, and newer unvalidated SDNQ is **downgraded to 0.2.4**.
+It uses the active venv's pip or locked uv sync, verifies the result, and leaves
+unrelated additional packages alone. Windows package updates wait for the GUI
+process to close so Qt DLLs are released before installation.
 
-Measured on RTX 4090 24 GB GPUs with PyTorch 2.10.0+cu128. Every passing trial completed **10 optimizer steps**, **batch size 1 per GPU**, accumulation 1, rank/alpha 32, BF16 adapters, INT8 SDNQ frozen base weights (`all_adaln` skip policy), gradient checkpointing, `torch.compile`, packed `torch_varlen` attention, and **Cached Text Encoder (five augmented variations per image)** with cached image latents. The `adamw8bit` preset uses Kahan compensation with **optimizer-state quantization and offloading disabled**.
+Choosing No keeps the existing environment. Failed installs stop restart and log
+to `.mageflow-trainer-update.log` inside the venv. `--no-update-check` skips Git
+checking; `--no-dependency-check` skips package checking. Matching environments
+are not reinstalled on each launch, and global Python is not modified.
 
-Ten large, file-deduplicated images from the Nicorima dataset were used. Sources are approximately 2K; larger tiers deliberately upscale them to test capacity. Resolutions are target-area tiers with aspect-ratio buckets, not fixed square dimensions. Single-GPU tests use GPU 1; dual-GPU tests use GPUs 0 and 1. GPU 0 retains approximately 1.4–1.6 GiB of desktop usage. CUDA reports about 23.52 GiB usable capacity per card.
+## Model support tiers
 
-Cached Text Encoder means training reads precomputed text embeddings; the encoder itself is unloaded.
+| Tier | Models | Maintenance policy |
+|---|---|---|
+| **1 — First-class** | **MOSS-Image Base/SFT** | Primary development, correctness testing, and bug-fix priority. Highest level of support. |
+| **2 — Promising integrations** | Reserved; **Krea2 is a candidate, not implemented** | Selected future flow models, below MOSS priority. |
+| **3 — Limited support** | **Mage-Flow, FLUX.3 Image Klein Base** | Available today with lower maintenance priority; support may be discontinued or removed. |
 
-Values below are **peak PyTorch allocated / reserved GiB per GPU**, including the first training step. They exclude external processes, CUDA context, and NCCL allocations. Model/cache initialization is recorded separately in the detailed results. OOM means a tested tier failed, not an exact resolution limit. These are short memory tests, not training-quality benchmarks.
+Tier changes do not alter existing checkpoint formats or training settings.
 
-### Single GPU
+- **Mage-Flow:** uses its own transformer, Qwen3-VL conditioning, and matching
+  VAE. See the [training guide](docs/training-guide.md),
+  [benchmark preset](configs/mageflow-readme-benchmark.toml), and
+  [finetuning measurements](docs/bisque-finetune-smoke.md). These are Mage-specific.
+- **FLUX.3 Image Klein Base:** text-to-image adapters and full finetuning only;
+  reference-image editing and distilled flow-map checkpoints are unsupported.
+  Use its own package and VAE. See the [Flux3 guide](docs/flux3-experimental.md),
+  [LoCon preset](configs/flux3-locon-experimental.toml), and
+  [finetuning preset](configs/flux3-finetune-experimental.toml).
 
-| Resolution tier | LyCORIS LoCon | PEFT LoRA |
-| ---: | --- | --- |
-| 1024 | 6.75 / 7.05 | 6.75 / 7.07 |
-| 2048 | 9.88 / 10.55 | 9.88 / 10.55 |
-| 3072 | 15.11 / 16.21 | 15.11 / 16.21 |
-| 4096 | 22.44 / 23.04 | 22.44 / 23.04 |
-| 5120 | OOM | OOM |
+### Experimental features
 
-### Dual GPU (DDP)
+MOSS's first-class status does not make every optional backend established.
+**ConvRot INT8** is an experimental MOSS BF16 LyCORIS LoCon backend, using native
+BF16 source weights and frozen quantization. It does not support full finetuning
+or other adapter algorithms. Install the optional `convrot` dependencies to use it;
+see the [MOSS guide](docs/moss-image-experimental.md) for restrictions.
 
-| Resolution tier | LyCORIS LoCon | PEFT LoRA |
-| ---: | --- | --- |
-| 1024 | GPU 0: 6.99 / 7.19; GPU 1: 6.97 / 7.17 | GPU 0: 6.99 / 7.15; GPU 1: 6.97 / 7.11 |
-| 2048 | GPU 0: 9.88 / 10.41; GPU 1: 9.87 / 10.22 | GPU 0: 9.88 / 10.41; GPU 1: 9.86 / 10.22 |
-| 3072 | GPU 0: 14.97 / 15.82; GPU 1: 14.97 / 16.02 | GPU 0: 14.97 / 16.02; GPU 1: 14.96 / 16.02 |
-| 4096 | OOM | OOM |
-| 5120 | Not run (lower tier OOM) | Not run (lower tier OOM) |
+The GUI's **Enable advanced experimental features** toggle reveals research controls;
+it does not enable their losses. **Self-Flow, dual-timestep noising, RTI, decoded
+perceptual/eye LPIPS, and eye adversarial loss are not supported for MOSS.**
+Their separate Mage workflows are described in the [Self-Flow](docs/self-flow-training.md),
+[decoded-loss](docs/decoded-perceptual-loss.md), and
+[adversarial-loss](docs/eye-adversarial-loss.md) guides. Mage's
+[compressed modulation](docs/compressed-modulation.md) and
+[compiled loaded-text-encoder benchmark](docs/text-encoder-large-batch-benchmark.md)
+are also separate from MOSS training.
 
-DDP replicates the model on each GPU; it does not combine the cards into one 48 GB memory pool. Batch size 1 per GPU gives a global batch of 2, so ten dual-GPU steps process twenty image samples. See the [methodology and raw measurements](docs/readme-vram-benchmark.md) for timings, initialization memory, and reproduction commands.
+## Documentation
 
-### Batch-size sweep — GPU 1 only
+- [MOSS-Image model loading, training, validation, and export](docs/moss-image-experimental.md)
+- [Caption variation cache and invalidation](docs/caption-variation-cache.md)
+- [HF and paired texture losses](docs/detail-losses.md)
+- [SDNQ update-rounding diagnosis](docs/sdnq-integer-update-rounding.md)
+- [General configuration and legacy Mage workflows](docs/training-guide.md)
+- [FLUX.3 integration and limitations](docs/flux3-experimental.md)
 
-Fixed **1024-area resolution**, **Cached Text Encoder**, cached image latents, and the same INT8, rank-32, compiled varlen settings above. Each passing batch size completed ten full optimizer steps with accumulation 1. Values are peak **allocated / reserved GiB**. Batch size increases by one in a fresh process until CUDA OOM.
-
-| Batch size | LyCORIS LoCon | PEFT LoRA |
-| ---: | ---: | ---: |
-| 1 | 6.75 / 7.07 | 6.75 / 7.07 |
-| 2 | 7.84 / 8.14 | 7.84 / 8.14 |
-| 3 | 8.88 / 9.25 | 8.88 / 9.25 |
-| 4 | 9.96 / 10.58 | 9.96 / 10.58 |
-| 5 | 11.01 / 11.71 | 11.01 / 11.71 |
-| 6 | 12.08 / 12.90 | 12.08 / 12.90 |
-| 7 | 13.13 / 14.06 | 13.13 / 14.06 |
-| 8 | 14.20 / 15.27 | 14.20 / 15.27 |
-| 9 | 15.24 / 16.46 | 15.24 / 16.46 |
-| 10 | 16.32 / 17.46 | 16.32 / 17.46 |
-| 11 | 17.37 / 18.67 | 17.37 / 18.67 |
-| 12 | 18.45 / 19.80 | 18.45 / 19.80 |
-| 13 | 19.54 / 21.07 | 19.54 / 21.07 |
-| 14 | 20.58 / 21.95 | 20.58 / 21.95 |
-| 15 | 21.69 / 22.99 | 21.69 / 22.99 |
-| 16 | OOM | OOM |
-
-Both backends completed ten steps at every batch size from **1 through 15**. At batch size **16**, both hit CUDA OOM during the fifth step, after four successful steps. Batch size 15 peaked at **21.69 GiB allocated**; this measured limit applies to the stated 1024-area configuration and caption pool.
-
-See the [batch-size methodology and per-step measurements](docs/batch-size-vram-benchmark.md). Dataset repeats ensure full batches; the source pool remains the same ten images.
-
-### Full-model finetuning smoke test
-
-On the 384-image Bisque dataset, a **10-step full-model test** passed on GPU 1 at batch size 1 and 1024-area resolution with **Cached Text Encoder**. All 4.116 billion transformer parameters were enabled for training. INT8 SDNQ training mode with quantized, CPU-offloaded optimizer states peaked at **14.28 GiB allocated / 16.31 GiB reserved**. Model computation and gradients use BF16; optimizer and loss calculations retain FP32 intermediates.
-
-See the [test and dtype audit](docs/bisque-finetune-smoke.md) and [full-finetuning preset](configs/mageflow-finetune-cached-int8.toml).
-
-## Documentation and license
-
-- [Training and configuration guide](docs/training-guide.md)
-- [Caption variation cache](docs/caption-variation-cache.md)
-- [SNR-gated HF and paired texture losses](docs/detail-losses.md)
-- [Experimental Flux3 text-to-image training](docs/flux3-experimental.md)
-- [Experimental MOSS-Image training](docs/moss-image-experimental.md)
-- [Reproducible benchmark preset](configs/mageflow-readme-benchmark.toml)
-- [Benchmark methodology and detailed results](docs/readme-vram-benchmark.md)
-
-The combined trainer is GPL-3.0. Vendored Mage-Flow and related components retain their respective notices; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+The combined trainer is **GPL-3.0**. Vendored components retain their respective
+notices; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

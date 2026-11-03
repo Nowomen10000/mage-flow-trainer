@@ -1,4 +1,4 @@
-"""PySide6 GUI for the Mage-Flow trainer.
+"""PySide6 GUI for the BluFlow-Trainer.
 
     .venv/bin/python -m trainer.gui
 

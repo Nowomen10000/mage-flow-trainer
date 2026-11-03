@@ -1,4 +1,4 @@
-# Experimental native MOSS-Image Base/SFT finetuning; use its packaged VAE.
+# Tier 1 native MOSS-Image Base/SFT finetuning; use its packaged VAE.
 [dataset]
 path = "/path/to/moss-dataset"
 source = "latents"

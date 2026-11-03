@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mage-Flow trainer installer -- Linux.
+# BluFlow-Trainer installer -- Linux.
 #
 #   ./install.sh              install into ./venv, write ./start-gui.sh and ./start-converter.sh
 #   ./install.sh --recreate   delete an existing ./venv first
@@ -14,7 +14,7 @@ VENV="venv"
 # The diffusers commit this trainer was verified against. SDNQ integration is pinned to this revision, so
 # there is no release to pin to -- but floating HEAD means an install can break without a single
 # local change. Matches uv.lock; bump both together after re-running the parity gates.
-DIFFUSERS_REF="50e7158093710f9c1b4ea9ff100137a91c9228f3"
+DIFFUSERS_REF="7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941"
 TORCH_INDEX="https://download.pytorch.org/whl/cu128"
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
@@ -94,7 +94,7 @@ if command -v uv >/dev/null 2>&1; then
     # uv honours uv.lock, so this reproduces the exact resolved set including the git diffusers and
     # the cu128 torch index. UV_PROJECT_ENVIRONMENT points it at venv/ instead of its default .venv.
     say "installing with uv ${DIM}(from uv.lock)${OFF}"
-    UV_PROJECT_ENVIRONMENT="$VENV" uv sync --extra gui --extra ot \
+    UV_PROJECT_ENVIRONMENT="$VENV" uv sync --locked --extra gui --extra ot \
         || die "uv sync failed"
 else
     say "installing with pip ${DIM}(uv not found)${OFF}"
@@ -125,7 +125,7 @@ else
         "$VPY" -m pip install \
             "diffusers @ git+https://github.com/huggingface/diffusers@$DIFFUSERS_REF" \
             || die "diffusers install failed"
-        say "  mageflow-trainer and the rest"
+        say "  bluflow-trainer and the rest"
         "$VPY" -m pip install -e ".[gui,ot]" || die "install failed"
     fi
 fi
@@ -153,7 +153,7 @@ LAUNCHER
     chmod +x "$1"
 }
 
-write_launcher start-gui.sh       trainer.gui                 "Start the Mage-Flow trainer GUI."
+write_launcher start-gui.sh       trainer.gui                 "Start the BluFlow-Trainer GUI."
 
 # ---------------------------------------------------------------- report
 echo

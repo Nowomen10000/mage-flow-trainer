@@ -1,13 +1,13 @@
-# Experimental MOSS-Image training
+# MOSS-Image training — Tier 1
 
 Native MOSS-Image Base/SFT text-to-image weights can be finetuned or adapted from
 the GUI and CLI. Select `moss_image` as the model family (the official package's
 `model_index.json` is also detected automatically).
 
-**Support may be temporary.** Mage-Flow remains this trainer's primary focus.
-If MOSS-Image sees little adoption or is abandoned by the open-source community,
-its experimental support may be discontinued or removed. Long-term maintenance
-is not guaranteed.
+**First-class support in BluFlow-Trainer.** MOSS-Image is the primary development,
+correctness-testing, and bug-fix target. Individual experimental options retain
+their own limitations. This guide and preset filenames keep their historical
+`experimental` suffix for existing links and configurations.
 
 ## Start
 

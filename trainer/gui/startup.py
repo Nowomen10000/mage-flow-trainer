@@ -75,7 +75,7 @@ def _wait(app, label, operation):
     from PySide6 import QtCore, QtWidgets
 
     progress = QtWidgets.QProgressDialog(label, "", 0, 0)
-    progress.setWindowTitle("Mage-Flow Trainer")
+    progress.setWindowTitle("BluFlow-Trainer")
     progress.setCancelButton(None)
     progress.setMinimumDuration(0)
     progress.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
@@ -118,7 +118,8 @@ def offer_update(app, root):
         "Trainer update available",
         f"{update.branch} is {update.behind} commit(s) behind {update.upstream}.\n\n"
         "Update with git pull --ff-only before starting?\n"
-        "Changed dependency files will also refresh packages in this GUI's venv before restarting.\n"
+        "Changed dependency files or installed packages that differ from the pins will also "
+        "refresh this GUI's venv before restarting.\n"
         "Choose No to start the current version.",
         QtWidgets.QMessageBox.StandardButton.Yes
         | QtWidgets.QMessageBox.StandardButton.No,
@@ -140,7 +141,7 @@ def offer_update(app, root):
 
 
 def offer_dependency_update(root):
-    """Catch manual pulls and existing installs without a successful-sync marker."""
+    """Catch manual pulls, missing install markers, and installed-package drift."""
     from PySide6 import QtWidgets
     from ..tools.update_dependencies import dependencies_current, in_venv
 
@@ -148,9 +149,11 @@ def offer_dependency_update(root):
         return False
     answer = QtWidgets.QMessageBox.question(
         None, "Refresh trainer packages",
-        "Dependency files have changed, or this venv has not recorded a successful package refresh.\n\n"
+        "Dependency files have changed, installed packages differ from the repository pins, "
+        "or this venv has not recorded a successful package refresh.\n\n"
         "Install the repository's pinned packages into the active venv before starting? "
         "This includes the required LyCORIS revision.\n"
+        "Newer unvalidated versions (including SDNQ) will be downgraded to the pins.\n"
         "Choose No to continue with the existing packages.",
         QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
         QtWidgets.QMessageBox.StandardButton.Yes,
@@ -176,7 +179,7 @@ def main():
     skip_dependencies = "--no-dependency-check" in sys.argv
     sys.argv[:] = [arg for arg in sys.argv if arg not in ("--no-update-check", "--no-dependency-check")]
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    app.setApplicationName("Mage-Flow Trainer")
+    app.setApplicationName("BluFlow-Trainer")
     root = Path(__file__).resolve().parents[2]
     updated = not skip and offer_update(app, root)
     from ..tools.update_dependencies import in_venv

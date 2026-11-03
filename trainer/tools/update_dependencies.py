@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 
 DEPENDENCY_FILES = ("requirements.txt", "pyproject.toml", "uv.lock")
@@ -32,7 +34,68 @@ def fingerprint(root):
 
 
 def state_path():
+    # Keep the legacy filename across the BluFlow rename.
     return Path(sys.prefix) / ".mageflow-trainer-dependencies.json"
+
+
+def dependency_issues(root):
+    """Audit installed metadata against exported pins without importing packages.
+
+    Check platform markers and PEP 610 Git commit provenance, not merely a prior
+    successful-install marker: users can replace a package after a successful sync.
+    Optional packages absent from requirements.txt are deliberately left alone.
+    """
+    try:
+        from packaging.requirements import Requirement, InvalidRequirement
+    except ImportError:
+        return ["packaging is missing; installed dependency pins cannot be checked"]
+    path = Path(root) / "requirements.txt"
+    if not path.is_file():
+        return ["requirements.txt is missing; run the repository installer"]
+    issues = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "-")):
+            continue
+        try:
+            req = Requirement(line)
+        except InvalidRequirement:
+            issues.append(f"Cannot check requirement: {line}")
+            continue
+        if req.marker and not req.marker.evaluate():
+            continue
+        try:
+            dist = metadata.distribution(req.name)
+        except metadata.PackageNotFoundError:
+            issues.append(f"{req.name} is missing")
+            continue
+        if req.url:
+            try:
+                direct = json.loads(dist.read_text("direct_url.json") or "{}")
+                if req.url.startswith("git+"):
+                    source, revision = req.url[4:].rsplit("@", 1)
+                    vcs = direct.get("vcs_info", {})
+                    matches = (vcs.get("vcs") == "git"
+                               and vcs.get("commit_id") == revision.split("#", 1)[0]
+                               and _source_url(direct.get("url", "")) == _source_url(source))
+                else:
+                    matches = direct.get("url") == req.url
+            except (ValueError, AttributeError, TypeError):
+                matches = False
+            if not matches:
+                issues.append(f"{req.name} {dist.version}: installed source does not match {req.url}")
+        elif req.specifier and not req.specifier.contains(dist.version, prereleases=True):
+            issues.append(f"{req.name} {dist.version} installed; required {req.specifier}")
+    return issues
+
+
+def _source_url(url):
+    parsed = urlsplit(url)
+    # GitHub repository URLs are case-insensitive and may include a .git suffix.
+    path = parsed.path.removesuffix("/").removesuffix(".git")
+    if parsed.hostname == "github.com":
+        path = path.lower()
+    return parsed.hostname, path
 
 
 def dependencies_current(root):
@@ -41,7 +104,8 @@ def dependencies_current(root):
     except (OSError, ValueError):
         return False
     return (isinstance(state, dict) and state.get("root") == str(Path(root).resolve())
-            and state.get("fingerprint") == fingerprint(root))
+            and state.get("fingerprint") == fingerprint(root)
+            and not dependency_issues(root))
 
 
 def record_current(root, expected=None):
@@ -50,6 +114,10 @@ def record_current(root, expected=None):
     current = fingerprint(root)
     if expected is not None and current != expected:
         raise RuntimeError("Dependency files changed during installation. Restart to retry.")
+    issues = dependency_issues(root)
+    if issues:
+        raise RuntimeError("Installed packages still differ from the repository pins:\n"
+                           + "\n".join(issues[:12]))
     destination = state_path()
     fd, temporary = tempfile.mkstemp(prefix=destination.name, dir=destination.parent)
     try:

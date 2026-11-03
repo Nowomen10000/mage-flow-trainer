@@ -1,5 +1,5 @@
-Mage-Flow Trainer
-=============
+BluFlow-Trainer
+==============
 
 This project includes code from Aozora Trainer.
 
@@ -42,8 +42,8 @@ https://github.com/comfyanonymous/ComfyUI
 Training uses out-of-place PyTorch operations and this trainer's SDNQ integration.
 No Flux3 weights are distributed; the downloaded package retains its own license.
 
-Experimental MOSS-Image
------------------------
+MOSS-Image
+----------
 trainer/modeling/moss_image.py adapts OpenMOSS-Team's native MOSS-Image
 transformer from pipeline_moss_image.py (Apache-2.0):
 https://github.com/OpenMOSS/MOSS-Image

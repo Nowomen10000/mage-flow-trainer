@@ -47,6 +47,80 @@ wheels = [
 ]
 
 [[package]]
+name = "bluflow-trainer"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "accelerate" },
+    { name = "diffusers" },
+    { name = "einops" },
+    { name = "filelock" },
+    { name = "loguru" },
+    { name = "lycoris-lora" },
+    { name = "numpy" },
+    { name = "openvino" },
+    { name = "peft" },
+    { name = "pillow" },
+    { name = "safetensors" },
+    { name = "sdnq" },
+    { name = "sentencepiece" },
+    { name = "setuptools" },
+    { name = "toml" },
+    { name = "torch" },
+    { name = "torch-optimi" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "triton", marker = "sys_platform != 'win32'" },
+    { name = "triton-windows", marker = "sys_platform == 'win32'" },
+]
+
+[package.optional-dependencies]
+convrot = [
+    { name = "comfy-kitchen" },
+]
+gui = [
+    { name = "pyside6" },
+]
+ot = [
+    { name = "scipy" },
+]
+perceptual = [
+    { name = "lpips" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate" },
+    { name = "comfy-kitchen", marker = "extra == 'convrot'", specifier = "==0.2.37" },
+    { name = "diffusers", git = "https://github.com/huggingface/diffusers?rev=7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941" },
+    { name = "einops" },
+    { name = "filelock" },
+    { name = "loguru" },
+    { name = "lpips", marker = "extra == 'perceptual'", specifier = "==0.1.4" },
+    { name = "lycoris-lora", git = "https://github.com/KohakuBlueleaf/LyCORIS?rev=7abd5709f74f9159246ff9c6cc83bc0d5118b639" },
+    { name = "numpy" },
+    { name = "openvino", specifier = ">=2026.3.0" },
+    { name = "peft" },
+    { name = "pillow" },
+    { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.11.1" },
+    { name = "safetensors" },
+    { name = "scipy", marker = "extra == 'ot'" },
+    { name = "sdnq", specifier = "==0.2.4" },
+    { name = "sentencepiece" },
+    { name = "setuptools" },
+    { name = "toml" },
+    { name = "torch", specifier = "==2.10.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch-optimi", specifier = "==0.3.3" },
+    { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "tqdm" },
+    { name = "transformers", specifier = ">=4.51" },
+    { name = "triton", marker = "sys_platform != 'win32'" },
+    { name = "triton-windows", marker = "sys_platform == 'win32'", specifier = ">=3.6,<3.7" },
+]
+provides-extras = ["convrot", "perceptual", "ot", "gui"]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -168,7 +242,7 @@ wheels = [
 [[package]]
 name = "diffusers"
 version = "0.41.0.dev0"
-source = { git = "https://github.com/huggingface/diffusers#7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941" }
+source = { git = "https://github.com/huggingface/diffusers?rev=7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941#7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
@@ -354,80 +428,6 @@ dependencies = [
     { name = "torch" },
     { name = "tqdm" },
 ]
-
-[[package]]
-name = "mageflow-trainer"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "accelerate" },
-    { name = "diffusers" },
-    { name = "einops" },
-    { name = "filelock" },
-    { name = "loguru" },
-    { name = "lycoris-lora" },
-    { name = "numpy" },
-    { name = "openvino" },
-    { name = "peft" },
-    { name = "pillow" },
-    { name = "safetensors" },
-    { name = "sdnq" },
-    { name = "sentencepiece" },
-    { name = "setuptools" },
-    { name = "toml" },
-    { name = "torch" },
-    { name = "torch-optimi" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "triton", marker = "sys_platform != 'win32'" },
-    { name = "triton-windows", marker = "sys_platform == 'win32'" },
-]
-
-[package.optional-dependencies]
-convrot = [
-    { name = "comfy-kitchen" },
-]
-gui = [
-    { name = "pyside6" },
-]
-ot = [
-    { name = "scipy" },
-]
-perceptual = [
-    { name = "lpips" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate" },
-    { name = "comfy-kitchen", marker = "extra == 'convrot'", specifier = "==0.2.37" },
-    { name = "diffusers", git = "https://github.com/huggingface/diffusers" },
-    { name = "einops" },
-    { name = "filelock" },
-    { name = "loguru" },
-    { name = "lpips", marker = "extra == 'perceptual'", specifier = "==0.1.4" },
-    { name = "lycoris-lora", git = "https://github.com/KohakuBlueleaf/LyCORIS?rev=7abd5709f74f9159246ff9c6cc83bc0d5118b639" },
-    { name = "numpy" },
-    { name = "openvino", specifier = ">=2026.3.0" },
-    { name = "peft" },
-    { name = "pillow" },
-    { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.11.1" },
-    { name = "safetensors" },
-    { name = "scipy", marker = "extra == 'ot'" },
-    { name = "sdnq", specifier = "==0.2.4" },
-    { name = "sentencepiece" },
-    { name = "setuptools" },
-    { name = "toml" },
-    { name = "torch", specifier = "==2.10.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torch-optimi", specifier = "==0.3.3" },
-    { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "tqdm" },
-    { name = "transformers", specifier = ">=4.51" },
-    { name = "triton", marker = "sys_platform != 'win32'" },
-    { name = "triton-windows", marker = "sys_platform == 'win32'", specifier = ">=3.6,<3.7" },
-]
-provides-extras = ["convrot", "perceptual", "ot", "gui"]
 
 [[package]]
 name = "markdown-it-py"

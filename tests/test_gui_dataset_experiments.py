@@ -63,6 +63,27 @@ def test_convrot_controls_and_roundtrip(gui, tmp_path):
     assert gui.editors["quant.text_encoder_weights_dtype"].widget.isEnabled()
 
 
+def test_moss_text_refiner_toggle_roundtrip(gui, tmp_path):
+    from trainer.training.config import load_config
+
+    key = "adapter.moss_train_text_refiner"
+    assert bridge.defaults()[key] is True
+    gui._apply(bridge.defaults() | {
+        "dataset.path": "/images", "train.model_family": "moss_image",
+        "adapter.kind": "lycoris_lora", key: False,
+    })
+    assert gui.editors[key].widget.isEnabled()
+    path = tmp_path / "main-blocks-only.toml"
+    bridge.write_toml(path, gui.collect())
+    assert load_config(path).adapter.moss_train_text_refiner is False
+    gui._apply(bridge.defaults() | bridge.flatten(bridge.read_toml(path)))
+    assert gui.collect()[key] is False
+    gui._apply(gui.collect() | {"train.model_family": "flux3"})
+    assert not gui.editors[key].widget.isEnabled()
+    gui._apply(gui.collect() | {"train.model_family": "moss_image", "adapter.kind": "none"})
+    assert not gui.editors[key].widget.isEnabled()
+
+
 def test_moss_sampler_locks_shared_controls_and_roundtrips(gui, tmp_path):
     from trainer.training.config import load_config
     gui._apply(bridge.defaults() | {"dataset.path": "/images", "flow.sigmoid_scale": 3,

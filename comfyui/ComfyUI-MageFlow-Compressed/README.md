@@ -65,7 +65,7 @@ For MOSS, add `--model-type moss_image` and optionally
 ## Supported checkpoints
 
 Loads `mageflow-lowrank-modulation-v1` checkpoints exported by
-[mage-flow-trainer](https://github.com/bluvoll/mage-flow-trainer), using strict
+[BluFlow-Trainer](https://github.com/bluvoll/BluFlow-Trainer), using strict
 weight loading. Factors must be stored in FP32; the trainer preserves this
 export format even when finetuning those factors in BF16.
 

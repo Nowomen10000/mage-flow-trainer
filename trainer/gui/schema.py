@@ -1,4 +1,4 @@
-"""GUI editor definitions and layout for the Mage-Flow configuration."""
+"""GUI editor definitions and layout for BluFlow-Trainer."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ SPEC: dict[str, Spec] = {
     "train.moss_qkv_format": _spec(
         "MOSS Q/K/V saving format", "Default: fused for MOSS full finetunes and plain LoRA/LoCon; other models and LoKr/DoRA retain their native layout. Fused supports fused-base loaders such as Forge. Plain LoRA/LoCon uses three times the joint QKV rank with equivalent scaling and larger files. Training and optimizer resume state stay native.",
         lambda: F.ChoiceEditor(["Default (fused for MOSS LoRA/LoCon and finetunes)", "fused", "separated"], values=["auto", "fused", "separated"])),
-    "train.model_family": _spec("Model family", "Flux3/MOSS text-to-image support is experimental; select SDPA or torch_varlen attention.", lambda: F.ChoiceEditor(["auto", "mage_flow", "flux3", "moss_image"])),
+    "train.model_family": _spec("Model family", "MOSS-Image: Tier 1 (primary support). Mage-Flow and FLUX.3: Tier 3 (may be removed). Tier 2 is reserved for future integrations.", lambda: F.ChoiceEditor(["Auto-detect", "MOSS-Image (Tier 1)", "Mage-Flow (Tier 3)", "FLUX.3 (Tier 3)"], ["auto", "moss_image", "mage_flow", "flux3"])),
     "train.model_path": _spec(
         "Model directory",
         'Local Mage-Flow repository, Flux3 BF16 package, or MOSS-Image package with transformer/, text_encoder/, tokenizer/ and vae/.',
@@ -686,6 +686,14 @@ SPEC: dict[str, Spec] = {
         lambda: F.BoolEditor("Decompose both LoKr factors"), inline_label=True),
 
     # ------------------------------------------------------------------ quant
+    "quant.preset": _spec(
+        "MOSS adapter preset",
+        "Standard: UINT8 storage with BF16 matmul. Balanced: Hadamard rotation + INT8 matmul. "
+        "Fast: INT8 matmul without rotation. Presets override the locked quantization fields; "
+        "Custom preserves manual settings. Balanced/Fast require BF16 LyCORIS LoCon with bypass. "
+        "These presets are for MOSS adapters, not full finetuning.",
+        lambda: F.ChoiceEditor(["Custom", "Standard — UINT8 / BF16", "Balanced — Hadamard / INT8",
+                                "Fast — INT8 matmul"], ["custom", "standard", "balanced", "fast"])),
     "quant.backend": _spec(
         "Transformer quantization backend",
         "ConvRot is experimental MOSS BF16 LyCORIS LoCon training with a frozen INT8 base, "
@@ -702,8 +710,13 @@ SPEC: dict[str, Spec] = {
         lambda: F.ChoiceEditor(["int8", "uint8", "fp8", "int7", "int6", "int5", "int4"])),
     "quant.use_quantized_matmul": _spec(
         "Quantized matmul",
-        'Auto defaults to off. Explicit on quantizes activations too; compatibility and performance depend on the SDNQ/PyTorch versions.',
+        'Auto defaults to off. Frozen MOSS INT8 matmul requires BF16 LyCORIS LoCon with bypass, INT8 weights, group_size=-1 and stochastic rounding off. Use Balanced/Fast to configure it.',
         lambda: F.ChoiceEditor(["auto", "on", "off"], ["auto", True, False])),
+    "quant.use_hadamard": _spec(
+        "Hadamard rotation",
+        "Rotate frozen MOSS INT8 weights and activations in groups of 256 to limit quantization error. "
+        "Requires the frozen INT8 matmul path; no additional packages. This is not a proven visual-quality ranking.",
+        lambda: F.BoolEditor("Use Hadamard rotation"), inline_label=True),
     "quant.skip_policy": _spec(
         "Skip policy",
         'Input/output and timestep projections stay in high precision. Optional policies also protect modulation or MLP down projections.',
@@ -726,7 +739,7 @@ SPEC: dict[str, Spec] = {
         "Dynamic loss threshold", "SDNQ internal. Empty = library default.",
         lambda: F.SciEditor(optional=True)),
     "quant.group_size": _spec(
-        "Group size", "0 = per-channel. SDNQ internal.", lambda: F.IntEditor(0, 1024)),
+        "Group size", "0 = per-channel; -1 = row-wise for frozen INT8 matmul. SDNQ internal.", lambda: F.IntEditor(-1, 1024)),
     "quant.use_stochastic_rounding": _spec(
         "Stochastic rounding",
         "What keeps small updates from vanishing into a quantized master weight. Leave on for "
@@ -865,7 +878,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
             'self_flow.adaln_fp32', 'self_flow.stochastic_rounding', 'self_flow.decay', 'self_flow.weight',
         ]),
         ("Quantization", [
-            "quant.backend", "quant.mode", "quant.weights_dtype", "quant.use_quantized_matmul",
+            "quant.preset", "quant.backend", "quant.mode", "quant.weights_dtype", "quant.use_quantized_matmul", "quant.use_hadamard",
             "quant.skip_policy", "quant.extra_skip",
             "quant.quantize_text_encoder", "quant.text_encoder_weights_dtype", "quant.use_stochastic_rounding",
             "quant.group_size", "quant.dynamic_loss_threshold",

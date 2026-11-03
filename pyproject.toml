@@ -1,7 +1,7 @@
 [project]
-name = "mageflow-trainer"
+name = "bluflow-trainer"
 version = "0.1.0"
-description = "Mage-Flow trainer with SDNQ quantized training"
+description = "BluFlow-Trainer: MOSS-Image training with SDNQ and multi-model flow support"
 # 3.11 is what every measurement in the README was taken on, and what the installer picks when
 # both are present. 3.12 is supported because torch 2.10.0+cu128 ships cp312 wheels for linux
 # x86_64 and win_amd64 and the whole graph resolves (verified with `uv lock --python 3.12`), but
@@ -62,7 +62,7 @@ gui = [
 lycoris-lora = { git = "https://github.com/KohakuBlueleaf/LyCORIS", rev = "7abd5709f74f9159246ff9c6cc83bc0d5118b639" }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
-diffusers = { git = "https://github.com/huggingface/diffusers" }
+diffusers = { git = "https://github.com/huggingface/diffusers", rev = "7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

@@ -150,6 +150,9 @@ class EncoderFingerprintTests(unittest.TestCase):
             old_quant = asdict(cfg.quant)
             old_quant.pop("text_encoder_weights_dtype", None)
             old_quant.pop("backend", None)
+            # These selector/rotation fields did not exist in the legacy cache.
+            old_quant.pop("preset", None)
+            old_quant.pop("use_hadamard", None)
             old_key = digest(
                 {**_encoder_fingerprint_payload(cfg), "quant": old_quant}
             )

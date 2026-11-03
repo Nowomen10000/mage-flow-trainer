@@ -60,6 +60,8 @@ def _encoder_fingerprint_payload(cfg):
         # Selector metadata is not encoder behavior; preserve existing cache keys.
         quant_payload.pop("text_encoder_weights_dtype", None)
         quant_payload.pop("backend", None)
+        quant_payload.pop("preset", None)
+        quant_payload.pop("use_hadamard", None)  # Always off for the encoder.
     payload = dict(
         version=1,
         versions=versions,
@@ -104,6 +106,7 @@ def encoder_fingerprint(cfg, cache_path=None):
         old_quant = asdict(
             replace(
                 cfg.quant,
+                preset="custom",
                 mode=mode,
                 use_quantized_matmul=qmm,
                 skip_policy=skip,
@@ -112,6 +115,8 @@ def encoder_fingerprint(cfg, cache_path=None):
         )
         old_quant.pop("text_encoder_weights_dtype", None)
         old_quant.pop("backend", None)
+        old_quant.pop("preset", None)
+        old_quant.pop("use_hadamard", None)
         # An explicit encoder override must not reuse the transformer's dtype.
         old_quant["weights_dtype"] = payload["quant"]["weights_dtype"]
         compatible.add(digest({**payload, "quant": old_quant}))

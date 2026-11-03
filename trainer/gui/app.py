@@ -162,7 +162,12 @@ _RULES = {
 
     "quant.text_encoder_weights_dtype": lambda c: bool(c.get("quant.quantize_text_encoder")),
     "quant.weights_dtype": lambda c: (c.get("quant.backend", "sdnq") == "sdnq" and c.get("quant.mode") != "none") or c.get("quant.quantize_text_encoder"),
+    "quant.backend": lambda c: True,
+    "quant.mode": lambda c: True,
     "quant.use_quantized_matmul": lambda c: c.get("quant.backend", "sdnq") == "sdnq" and c.get("quant.mode") != "none",
+    "quant.use_hadamard": lambda c: (c.get("quant.backend", "sdnq") == "sdnq"
+                                     and c.get("quant.mode") == "frozen"
+                                     and c.get("quant.use_quantized_matmul") is True),
     "quant.skip_policy": lambda c: c.get("quant.mode") != "none",
     "quant.extra_skip": lambda c: c.get("quant.mode") != "none",
     "quant.group_size": lambda c: (c.get("quant.backend", "sdnq") == "sdnq" and c.get("quant.mode") != "none") or c.get("quant.quantize_text_encoder"),
@@ -200,7 +205,7 @@ _RULES["component_lr.adaln"] = lambda c: c.get("adapter.kind") == "none"
 class TrainingGUI(QtWidgets.QWidget):
     def __init__(self, *, preferences=None, config_dir=None):
         super().__init__()
-        self.setWindowTitle("Mage-Flow Trainer")
+        self.setWindowTitle("BluFlow-Trainer")
         self.setMinimumSize(1100, 820)
         self.resize(1600, 1000)
 
@@ -701,6 +706,7 @@ class TrainingGUI(QtWidgets.QWidget):
             self._applying = False
         self._last_optimizer_kind = flat.get("optimizer.kind")
         self._last_adapter_selection = (flat.get("adapter.kind"), flat.get("adapter.lycoris_algo"))
+        self._lock_quant_preset()
         self._lock_moss_sampling()
         self._refresh()
 
@@ -825,6 +831,16 @@ class TrainingGUI(QtWidgets.QWidget):
 
     # ---------------------------------------------------------------- reactivity
 
+    def _lock_quant_preset(self):
+        from ..training.quant import QUANT_PRESETS
+        values = QUANT_PRESETS.get(self.editors["quant.preset"].get(), {})
+        self._applying = True
+        try:
+            for key, value in values.items():
+                self.editors[f"quant.{key}"].set(value)
+        finally:
+            self._applying = False
+
     def _lock_moss_sampling(self):
         if self.editors["flow.timestep_sample_method"].get() != "moss":
             return
@@ -841,6 +857,7 @@ class TrainingGUI(QtWidgets.QWidget):
 
     def _on_edit(self):
         if not self._applying:
+            self._lock_quant_preset()
             self._lock_moss_sampling()
             kind = self.editors["optimizer.kind"].get()
             if kind != getattr(self, "_last_optimizer_kind", kind) and kind in OPTIMIZERS:
@@ -880,12 +897,14 @@ class TrainingGUI(QtWidgets.QWidget):
         if active_experiment:
             self.experimental_chk.setChecked(True)
         self.experimental_chk.setEnabled(not active_experiment)
+        from ..training.quant import QUANT_PRESETS
+        locked_quant = {f"quant.{key}" for key in QUANT_PRESETS.get(flat.get("quant.preset"), {})}
         for key, rule in _RULES.items():
             editor = self.editors.get(key)
             if editor is None:
                 continue
             try:
-                on = bool(rule(flat))
+                on = bool(rule(flat)) and key not in locked_quant
             except Exception:
                 on = True
             editor.set_enabled(on)
@@ -1361,7 +1380,7 @@ def main():
     options, _ = parser.parse_known_args(sys.argv[1:])
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
-    app.setApplicationName("Mage-Flow Trainer")
+    app.setApplicationName("BluFlow-Trainer")
     window = TrainingGUI(config_dir=options.config_dir)
     window.show()
     sys.exit(app.exec())

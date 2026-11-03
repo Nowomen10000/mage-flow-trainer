@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-rem Mage-Flow trainer installer -- Windows.
+rem BluFlow-Trainer installer -- Windows.
 rem
 rem   install.bat              install into .\venv and write .\start-gui.bat
 rem   install.bat --recreate   delete an existing .\venv first
@@ -14,7 +14,7 @@ set "VENV=venv"
 rem The diffusers commit this trainer was verified against. SDNQ integration is pinned to this revision, so
 rem there is no release to pin to -- but floating HEAD means an install can break without a single
 rem local change. Matches uv.lock; bump both together after re-running the parity gates.
-set "DIFFUSERS_REF=50e7158093710f9c1b4ea9ff100137a91c9228f3"
+set "DIFFUSERS_REF=7ecb1e1b4fe500be7fb7381a7bb79a24d7fa3941"
 set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
 set "RECREATE=0"
 
@@ -84,7 +84,7 @@ if not errorlevel 1 (
     rem and the cu128 torch index. UV_PROJECT_ENVIRONMENT points it at venv\ rather than .venv\.
     echo ==^> installing with uv ^(from uv.lock^)
     set "UV_PROJECT_ENVIRONMENT=%VENV%"
-    uv sync --extra gui --extra ot || (
+    uv sync --locked --extra gui --extra ot || (
         echo xxx uv sync failed
         exit /b 1
     )
@@ -123,7 +123,7 @@ if not errorlevel 1 (
 rem ---------------------------------------------------------------- launchers
 rem `convert_model` opens its window when given no arguments, so both launchers forward %* rather
 rem than hardcoding --gui: a bare double-click still opens the GUI, and CLI flags keep working.
-call :launcher start-gui.bat       trainer.gui                 "Start the Mage-Flow trainer GUI."
+call :launcher start-gui.bat       trainer.gui                 "Start the BluFlow-Trainer GUI."
 
 rem ---------------------------------------------------------------- report
 echo.

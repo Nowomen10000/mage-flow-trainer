@@ -25,18 +25,31 @@ _HIGH_PRECISION = [
     "pos_embed",
 ]
 SKIP_POLICIES = ("default", "first_block_adaln", "all_adaln", "mlp_down")
+QUANT_PRESETS = {
+    "standard": dict(mode="frozen", backend="sdnq", weights_dtype="uint8",
+                     use_quantized_matmul=False, use_hadamard=False, group_size=0,
+                     use_stochastic_rounding=False, dynamic_loss_threshold=None),
+    "balanced": dict(mode="frozen", backend="sdnq", weights_dtype="int8",
+                     use_quantized_matmul=True, use_hadamard=True, group_size=-1,
+                     use_stochastic_rounding=False, dynamic_loss_threshold=None),
+    "fast": dict(mode="frozen", backend="sdnq", weights_dtype="int8",
+                 use_quantized_matmul=True, use_hadamard=False, group_size=-1,
+                 use_stochastic_rounding=False, dynamic_loss_threshold=None),
+}
 
 
 @dataclass
 class QuantConfig:
     """Transformer quantization settings; the frozen encoder has its own toggle."""
 
+    preset: str = "custom"  # Existing configs retain their explicit settings.
     mode: str = "none"  # "none" | "frozen" | "training"
     backend: str = "sdnq"  # Transformer only; the text encoder always uses SDNQ.
     weights_dtype: str = (
         "int8"  # int8 default: faster than fp8 here, and 2x lower error
     )
     use_quantized_matmul: bool | str = "auto"
+    use_hadamard: bool = False
     quantize_text_encoder: bool = False
     text_encoder_weights_dtype: str | None = None  # None inherits weights_dtype
 
@@ -49,6 +62,10 @@ class QuantConfig:
     use_stochastic_rounding: bool = True
 
     def __post_init__(self):
+        if self.preset != "custom" and self.preset not in QUANT_PRESETS:
+            raise ValueError(f"unknown quant preset: {self.preset!r}")
+        for key, value in QUANT_PRESETS.get(self.preset, {}).items():
+            setattr(self, key, value)
         if self.backend not in ("sdnq", "convrot"):
             raise ValueError(f"unknown quant backend: {self.backend!r}")
         if self.mode not in ("none", "frozen", "training"):
@@ -62,6 +79,10 @@ class QuantConfig:
                 f'use_quantized_matmul must be true, false, or "auto", '
                 f"got {self.use_quantized_matmul!r}"
             )
+
+    @property
+    def frozen_matmul(self) -> bool:
+        return self.backend == "sdnq" and self.mode == "frozen" and self.use_quantized_matmul is True
 
     def skip_keys(self) -> list[str]:
         keys = _HIGH_PRECISION + list(self.extra_skip)
@@ -80,6 +101,7 @@ def text_encoder_quant_config(cfg: QuantConfig) -> QuantConfig | None:
         return None
     return replace(
         cfg,
+        preset="custom",
         mode="frozen",
         backend="sdnq",
         weights_dtype=cfg.text_encoder_weights_dtype or cfg.weights_dtype,
@@ -87,11 +109,12 @@ def text_encoder_quant_config(cfg: QuantConfig) -> QuantConfig | None:
         skip_policy="default",
         extra_skip=["lm_head"],
         use_quantized_matmul=False,
+        use_hadamard=False,
     )
 
 
 def resolve_quantized_matmul(cfg, tokens=None):
-    """Require an explicit opt-in: there is no measured Mage-Flow crossover."""
+    """Presets opt in explicitly; legacy auto remains storage-only."""
     return (
         False if cfg.use_quantized_matmul == "auto" else bool(cfg.use_quantized_matmul)
     )
@@ -124,6 +147,9 @@ def build_sdnq_config(
         quantization_device=device,
         return_device=device,
         is_training=is_training,
+        use_hadamard=cfg.use_hadamard,
+        hadamard_group_size=256,
+        **({"quantized_matmul_dtype": "int8"} if cfg.frozen_matmul else {}),
     )
 
 
@@ -156,6 +182,15 @@ def quantize_module(
         protected += [f'layers.{i}' for i in range(max(0, module.params.num_layers-2), module.params.num_layers)]
         cfg = replace(cfg, extra_skip=cfg.extra_skip + ['.'+name+'.' for name in protected])
     is_training = cfg.mode == "training"
+    if cfg.frozen_matmul:
+        if (getattr(module, "model_family", None) != "moss_image"
+                or torch.device(device).type != "cuda" or dtype != torch.bfloat16
+                or cfg.weights_dtype != "int8" or cfg.group_size != -1
+                or cfg.use_stochastic_rounding or cfg.dynamic_loss_threshold is not None
+                or use_qmm is False):
+            raise ValueError("Frozen INT8 matmul requires MOSS CUDA/BF16, INT8 row-wise weights "
+                             "(group_size=-1), stochastic rounding off and no dynamic loss threshold")
+        module.requires_grad_(False)
     if is_training and cfg.use_stochastic_rounding:
         from .sdnq_rounding import enable_unbiased_integer_rounding
 
@@ -167,7 +202,7 @@ def quantize_module(
         )
     if getattr(module, "region_interface", None) is not None:
         cfg = replace(cfg, extra_skip=cfg.extra_skip + ["region_interface"])
-    sdnq_cfg = build_sdnq_config(cfg, device, is_training, use_qmm)
+    sdnq_cfg = build_sdnq_config(cfg, device, is_training or cfg.frozen_matmul, use_qmm)
 
     module, sdnq_cfg = add_module_skip_keys(module, sdnq_cfg)
 
@@ -177,8 +212,11 @@ def quantize_module(
             raise ValueError("ConvRot requires a frozen MOSS transformer")
         return apply_convrot(module, sdnq_cfg, device, dtype)
 
-    apply = apply_sdnq_training_to_module if is_training else apply_sdnq_to_module
+    apply = apply_sdnq_training_to_module if is_training or cfg.frozen_matmul else apply_sdnq_to_module
     module, _ = apply(module, sdnq_cfg, torch_dtype=dtype)
+    if cfg.frozen_matmul:
+        from .frozen_matmul import install_frozen_matmul
+        module = install_frozen_matmul(module)
     return module
 
 
@@ -214,7 +252,8 @@ def quantized_layer_report(module: nn.Module) -> tuple[int, int, list[str]]:
 
     quantized, skipped = 0, []
     for name, m in module.named_modules():
-        if isinstance(m, (SDNQLinear, SDNQLayer)) or getattr(m, "_trainer_convrot", False):
+        if (isinstance(m, (SDNQLinear, SDNQLayer)) or getattr(m, "_trainer_convrot", False)
+                or getattr(m, "_trainer_sdnq_matmul", False)):
             quantized += 1
         elif isinstance(m, nn.Linear):
             skipped.append(name)
