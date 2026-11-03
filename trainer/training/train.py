@@ -22,6 +22,11 @@ from pathlib import Path
 # explicitly-set value always wins.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# SDNQ may initialize Triton while importing. Choose the Windows C launcher
+# compiler before that happens; MSVC remains available for Inductor's C++ code.
+from ..tools.windows_toolchain import configure_windows_triton_compiler
+configure_windows_triton_compiler()
+
 import torch
 from accelerate import Accelerator
 from accelerate.utils import set_seed, DistributedDataParallelKwargs
@@ -130,8 +135,9 @@ class Trainer:
     def __init__(self, cfg: Config, config_path: str | Path | None = None):
         from .config import validate_model_options
         validate_model_options(cfg)
-        from ..tools.windows_toolchain import prepare_windows_toolchain
+        from ..tools.windows_toolchain import prepare_windows_toolchain, check_windows_triton_compiler
         prepare_windows_toolchain(required=bool(cfg.train.compile or cfg.train.compile_text_encoder))
+        check_windows_triton_compiler()
         require_cuda()
         self.cfg = cfg
         self.config_path = Path(config_path) if config_path else None

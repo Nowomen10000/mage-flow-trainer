@@ -163,6 +163,13 @@ Windows training automatically finds installed C++ Build Tools using Microsoft's
 paths, for the training process. No system PATH changes or special terminal
 are needed when discovery succeeds. GUI runs and queued configs check this
 **before caching**; CLI training checks before loading models.
+Triton's C launchers use its bundled TinyCC by default, while Inductor keeps
+MSVC for C++. This avoids older MSVC toolsets rejecting Triton's generated
+C with `C2059: syntax error: '}'`. An explicit `CC` environment variable is
+respected. Preflight compiles and loads a small C extension to check the
+launcher compiler and Python development files before starting expensive work;
+this does not certify GPU kernel support. If a custom `CC` selects an older
+MSVC and fails this check, unset it or update that toolset.
 
 If the tools are missing, install Visual Studio Build Tools with **Desktop
 development with C++**, including **MSVC x64/x86 tools** and a **Windows 10/11

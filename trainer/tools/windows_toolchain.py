@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tomllib
 
 
@@ -21,6 +22,68 @@ INSTALL_HELP = (
     "Then restart the trainer; it will load the environment automatically. "
     "If discovery still fails, launch from 'x64 Native Tools Command Prompt'."
 )
+
+
+def configure_windows_triton_compiler():
+    """Keep Triton's C launcher compiler separate from Inductor's C++ compiler.
+
+    Triton Windows prefers an activated MSVC environment over its bundled
+    TinyCC. Older MSVC (including 14.38) rejects the ``= {}`` initializers in
+    Triton 3.6's generated C launcher. Explicit CC choices remain authoritative.
+    Call before importing Torch/SDNQ, which may initialize Triton's cached CC.
+    """
+    if sys.platform != "win32" or "CC" in os.environ:
+        return
+    compiler = Path(sysconfig.get_path("platlib")) / "triton/runtime/tcc/tcc.exe"
+    if compiler.is_file():
+        os.environ["CC"] = str(compiler)
+        # Also handle callers that imported Triton before this helper.
+        build = sys.modules.get("triton.runtime.build")
+        if build is not None and hasattr(build, "get_cc"):
+            build.get_cc.cache_clear()
+        print(f"Triton C launcher compiler: {compiler} (MSVC retained for C++)", flush=True)
+
+
+def check_windows_triton_compiler():
+    """Compile/load a tiny C extension before caching, without loading a model.
+
+    Exercises the empty initializer syntax and Python headers/import library
+    that the real Triton launcher needs. This is not a GPU/kernel capability test.
+    """
+    if sys.platform != "win32":
+        return
+    configure_windows_triton_compiler()
+    try:
+        from triton.runtime.build import compile_module_from_src, get_cc
+        compiler = get_cc()
+        # Include compiler identity in the source/cache key so a previous pass
+        # with TinyCC cannot conceal a newly selected, incompatible MSVC.
+        resolved = Path(shutil.which(compiler) or compiler)
+        identity = repr((str(resolved), resolved.stat().st_mtime_ns))
+        source = r'''
+#include <Python.h>
+typedef struct { int id; union { int value; long long other; } data; } Attr;
+static struct PyModuleDef module = {
+    PyModuleDef_HEAD_INIT, "_bluflow_c_probe", NULL, -1, NULL
+};
+PyMODINIT_FUNC PyInit__bluflow_c_probe(void) {
+    Attr first = {};
+    Attr second = {};
+    if (first.id || second.data.value) return NULL;
+    return PyModule_Create(&module);
+}
+'''
+        compile_module_from_src(source + "\n// " + identity + "\n", "_bluflow_c_probe")
+        print(f"Triton C launcher compile/load check passed: {compiler}", flush=True)
+    except Exception as exc:
+        raise RuntimeError(
+            "Triton could not compile/load its Windows C launcher. "
+            "If CC selects an older cl.exe (e.g. MSVC 14.38), unset CC to use "
+            "triton-windows' bundled TinyCC, or select an updated MSVC toolset. "
+            "Keep MSVC installed for torch.compile C++ code. Restore the repository's "
+            "pinned triton-windows package if its bundled compiler is missing. "
+            f"Original error: {exc}"
+        ) from exc
 
 
 def validate_windows_attention(backend, pack_resolutions):
@@ -89,6 +152,7 @@ def prepare_windows_toolchain(*, required=False):
     """Return readiness; raise an actionable error only when compilation needs it."""
     if sys.platform != "win32":
         return True
+    configure_windows_triton_compiler()
     if _ready(os.environ):
         return True
     errors = []
@@ -127,6 +191,7 @@ def main():
     try:
         validate_windows_attention(train.get("attention_backend", "sdpa"), train.get("pack_resolutions", False))
         prepare_windows_toolchain(required=required)
+        check_windows_triton_compiler()
     except (RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr, flush=True)
         return 1

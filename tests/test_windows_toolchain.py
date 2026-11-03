@@ -15,6 +15,57 @@ def test_non_windows_does_no_discovery(monkeypatch):
     assert tools.prepare_windows_toolchain(required=True)
 
 
+def test_windows_uses_bundled_c_compiler_without_changing_cpp(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32", modules={}))
+    compiler = tmp_path / "triton/runtime/tcc/tcc.exe"
+    compiler.parent.mkdir(parents=True)
+    compiler.touch()
+    monkeypatch.setattr(tools.sysconfig, "get_path", lambda key: str(tmp_path))
+    env = {"PATH": "msvc", "INCLUDE": "headers", "LIB": "libraries", "CXX": "cl.exe"}
+    monkeypatch.setattr(tools.os, "environ", env)
+    tools.configure_windows_triton_compiler()
+    assert env == {"PATH": "msvc", "INCLUDE": "headers", "LIB": "libraries",
+                   "CXX": "cl.exe", "CC": str(compiler)}
+
+
+@pytest.mark.parametrize("platform,explicit", [("linux", None), ("win32", "my-compiler.exe")])
+def test_c_compiler_selection_preserves_user_choice_and_linux(monkeypatch, platform, explicit):
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform=platform))
+    env = {} if explicit is None else {"CC": explicit}
+    before = dict(env)
+    monkeypatch.setattr(tools.os, "environ", env)
+    monkeypatch.setattr(tools.sysconfig, "get_path", lambda key: pytest.fail("must not select compiler"))
+    tools.configure_windows_triton_compiler()
+    assert env == before
+
+
+def test_missing_bundled_compiler_keeps_normal_discovery(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools.os, "environ", {})
+    monkeypatch.setattr(tools.sysconfig, "get_path", lambda key: str(tmp_path))
+    tools.configure_windows_triton_compiler()
+    assert "CC" not in tools.os.environ
+
+
+def test_c_probe_reproduces_launcher_syntax_and_reports_selected_compiler(monkeypatch, tmp_path, capsys):
+    compiler = tmp_path / "cl.exe"
+    compiler.touch()
+    sources = []
+    build = SimpleNamespace(get_cc=lambda: str(compiler),
+                            compile_module_from_src=lambda src, name: sources.append((src, name)))
+    monkeypatch.setitem(sys.modules, "triton.runtime.build", build)
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tools, "configure_windows_triton_compiler", lambda: None)
+    tools.check_windows_triton_compiler()
+    assert "Attr first = {};" in sources[0][0]
+    assert str(compiler) in capsys.readouterr().out
+    def fail(*args):
+        raise RuntimeError("C2059: syntax error: '}'")
+    build.compile_module_from_src = fail
+    with pytest.raises(RuntimeError, match="unset CC"):
+        tools.check_windows_triton_compiler()
+
+
 def test_active_environment_is_preserved(monkeypatch):
     monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(tools, "_ready", lambda env: True)
@@ -125,3 +176,9 @@ def test_real_windows_environment_capture():
         pytest.skip("C++ Build Tools not installed")
     captured = tools._capture_environment(scripts[0], os.environ)
     assert tools._ready(captured)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows integration")
+def test_real_windows_triton_c_launcher():
+    tools.prepare_windows_toolchain(required=True)
+    tools.check_windows_triton_compiler()
