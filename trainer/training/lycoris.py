@@ -53,7 +53,9 @@ def apply_lycoris_lora(model, cfg):
     cfg._validate_lora_targets()
     targets = [
         (name, model.get_submodule(name))
-        for name in adapter_target_names(model, cfg.components)
+        for name in adapter_target_names(
+            model, cfg.components, moss_train_text_refiner=cfg.moss_train_text_refiner
+        )
     ]
     model.requires_grad_(False)
     for name, module in targets:

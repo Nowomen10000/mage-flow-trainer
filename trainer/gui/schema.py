@@ -663,6 +663,14 @@ SPEC: dict[str, Spec] = {
     "adapter.lycoris_bypass": _spec("LyCORIS bypass", "Compute the adapter separately from the frozen base. Disabled for weight decomposition so magnitude normalization is applied.", lambda: F.BoolEditor("Bypass base weight merging"), inline_label=True),
     "adapter.lycoris_wd_on_output": _spec("Decompose on output", "Normalize weight decomposition along the output dimension (wd_on_out).", lambda: F.BoolEditor("Weight decomposition on output"), inline_label=True),
     "adapter.dtype": _spec("Adapter dtype", "FP32 is the default. BF16 reduces adapter weights, gradients and projection activation memory; validate its training quality separately.", lambda: F.ChoiceEditor(["float32", "bfloat16"])),
+    "adapter.moss_train_text_refiner": _spec(
+        "Train MOSS text-refinement adapters",
+        "Adds adapters to the two text-refinement blocks inside the MOSS transformer, not the Qwen text encoder. "
+        "These can adapt how caption features condition the image, adding capacity but also allowing prompt interpretation to change. "
+        "Off trains only the main transformer blocks, matching our controlled sd-scripts comparison. "
+        "Neither setting guarantees stronger or better results. On preserves existing configs. "
+        "MOSS adapters only; cached Qwen embeddings stay valid. Keep this setting unchanged when resuming an adapter run.",
+        lambda: F.BoolEditor("Train MOSS text-refinement adapters"), inline_label=True),
     "adapter.rank": _spec("Rank / dimension", "LoRA rank / LoKr dimension. Large LoKr dimensions such as 10000 are supported; actual factorization depends on layer shapes and factor.", lambda: F.IntEditor(1, 2**31 - 1)),
     "adapter.alpha": _spec(
         "Alpha",
@@ -821,6 +829,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
             "adapter.kind", "adapter.lycoris_algo",
             "adapter.lokr_factor", "adapter.lokr_decompose_both",
             "adapter.lycoris_bypass", "adapter.lycoris_wd_on_output", "adapter.rank", "adapter.dtype", "adapter.alpha", "adapter.dropout",
+            "adapter.moss_train_text_refiner",
         ]),
         ("Full Finetuning", ["component_lr.adaln"]),
         ("Flow Matching", [

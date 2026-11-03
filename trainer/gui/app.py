@@ -148,6 +148,8 @@ _RULES = {
     "adapter.lycoris_bypass": lambda c: c.get("adapter.kind") == "lycoris_lora" and c.get("adapter.lycoris_algo") not in ("dora",),
     "adapter.lycoris_wd_on_output": lambda c: c.get("adapter.kind") == "lycoris_lora" and c.get("adapter.lycoris_algo") in ("dora",),
     "adapter.dtype": lambda c: c.get("adapter.kind") != "none",
+    "adapter.moss_train_text_refiner": lambda c: (c.get("train.model_family") in ("auto", "moss_image")
+        and c.get("adapter.kind") != "none"),
     "adapter.rank": lambda c: c.get("adapter.kind") != "none",
     "adapter.alpha": lambda c: c.get("adapter.kind") != "none",
     "adapter.dropout": lambda c: c.get("adapter.kind") != "none",

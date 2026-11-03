@@ -119,7 +119,7 @@ def test_compile_keeps_mode_options_with_safe_reductions(monkeypatch, mode):
     model.configure_execution(compile_mode=mode, attention_backend="torch_varlen")
     expected = dict(torch._inductor.list_mode_options(mode))
     expected["triton.mix_order_reduction"] = False
-    assert calls == [{"options": expected, "dynamic": True}] * 2
+    assert calls == [{"options": expected, "dynamic": True}]
 
 
 def test_training_targets():

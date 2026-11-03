@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from trainer.training.activation_offload import (
     checkpoint_with_offload, configure_activation_offload,
 )
@@ -20,7 +21,11 @@ class _RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        y = x.float() * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + 1e-6)
+        # Share the cast so both gradient branches accumulate in FP32 before
+        # conversion back to the input dtype. Two separate x.float() calls
+        # round each branch to BF16 independently during backward.
+        xf = x.float()
+        y = xf * torch.rsqrt(xf.square().mean(-1, keepdim=True) + 1e-6)
         return y.to(x.dtype) * self.weight
 
 
@@ -133,6 +138,15 @@ class _Block(nn.Module):
         y = self.norm2(x) * (1 + scale_f) + shift_f
         hidden, gate = self.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
         return x + self.proj["ffn_down"](_situ(hidden, gate)) * gate_f
+
+
+def _checkpointed_block_forward(block, *args):
+    # Capture checkpointing inside the compiled region. Putting a checkpoint
+    # around an already-compiled forward produces a different BF16 backward
+    # graph, even with identical weights, noise and conditioning.
+    if block.training and torch.is_grad_enabled():
+        return checkpoint(_Block.forward, block, *args, use_reentrant=False)
+    return _Block.forward(block, *args)
 
 
 class _RoPE(nn.Module):
@@ -248,6 +262,7 @@ class MOSSImage(nn.Module):
             )
         self.checkpointing = gradient_checkpointing
         self.attention_backend = attention_backend
+        self._compiled_main_blocks = compile_mode is not None
         compile_options = None
         if compile_mode is not None:
             compile_options = dict(torch._inductor.list_mode_options(compile_mode))
@@ -259,16 +274,14 @@ class MOSSImage(nn.Module):
             _Block.forward
             if compile_mode is None
             else torch.compile(
-                _Block.forward, options=compile_options, dynamic=compile_dynamic
+                _checkpointed_block_forward if gradient_checkpointing else _Block.forward,
+                options=compile_options, dynamic=compile_dynamic
             )
         )
-        self.text_forward = (
-            _TextBlock.forward
-            if compile_mode is None
-            else torch.compile(
-                _TextBlock.forward, options=compile_options, dynamic=compile_dynamic
-            )
-        )
+        # Match the reference training path: only the large joint blocks are
+        # compiled. The two small text-refinement blocks stay eager, including
+        # when they carry adapters. Eager checkpointing/offload still applies.
+        self.text_forward = _TextBlock.forward
 
     def add_adapter(self, config):
         from peft import inject_adapter_in_model
@@ -276,6 +289,8 @@ class MOSSImage(nn.Module):
         inject_adapter_in_model(config, self)
 
     def _run(self, fn, block, *args):
+        if self._compiled_main_blocks and isinstance(block, _Block):
+            return fn(block, *args)
         if self.checkpointing and self.training and torch.is_grad_enabled():
             return checkpoint_with_offload(self, fn, block, *args)
         return fn(block, *args)

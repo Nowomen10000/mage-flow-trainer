@@ -82,6 +82,15 @@ modulation and Qwen3.5-9B final-layer conditioning. Its packaged FLUX.2 VAE has
 an /8 encoder and a smaller decoder; latent packing gives an effective /16 stride.
 Use fresh latent caches with that VAE.
 
+MOSS RMSNorm now combines gradient branches in FP32 before rounding to BF16.
+Checkpointing is captured inside compiled main blocks; text-refinement blocks
+stay eager. These corrections affect the training trajectory.
+
+**Method → Adapter → Train MOSS text-refinement adapters** controls adaptation
+of caption features inside the transformer. Disable it to train only main blocks.
+`adapter.moss_train_text_refiner` defaults to `true` for existing configs; keep it
+unchanged when resuming. Qwen and cached text embeddings are unaffected.
+
 Under **Training → Checkpoints**, **MOSS Q/K/V saving format** defaults to fused
 for full finetunes and plain LoRA/LoCon; separated remains selectable. Other models
 and LoKr/DoRA keep their native layout. Fused LoRA/LoCon exports support loaders that expect

@@ -246,12 +246,13 @@ def lora_target_modules(components: list[str]) -> list[str]:
     return targets
 
 
-def adapter_target_names(transformer, components):
+def adapter_target_names(transformer, components, *, moss_train_text_refiner=True):
     """Exact targets, excluding the final block's discarded text output branch."""
     if getattr(transformer, 'model_family', None) == 'moss_image':
+        prefixes = ('layers.', 'text_embedder.blocks.') if moss_train_text_refiner else ('layers.',)
         return [name for name,module in transformer.named_modules()
                 if isinstance(module, nn.Linear)
-                and name.startswith(('layers.', 'text_embedder.blocks.'))
+                and name.startswith(prefixes)
                 and classify(name+'.weight') in components]
     if getattr(transformer, 'model_family', None) == 'flux3':
         return [name for name,module in transformer.named_modules()
@@ -297,6 +298,8 @@ class AdapterConfig:
     init: str = "random"
     # Where to cache the singular directions. One SVD pass serves all three bands.
     init_cache: str | None = None
+    # Preserve existing MOSS target selection when loading older configs.
+    moss_train_text_refiner: bool = True
 
     def __post_init__(self):
         if self.kind not in ("lora", "lycoris_lora", "lokr", "none"):
@@ -367,7 +370,9 @@ def apply_adapter(
         return apply_lycoris_lora(transformer, cfg)
 
     peft_config = cfg.build()
-    peft_config.target_modules = set(adapter_target_names(transformer, cfg.components))
+    peft_config.target_modules = set(adapter_target_names(
+        transformer, cfg.components, moss_train_text_refiner=cfg.moss_train_text_refiner
+    ))
     transformer.requires_grad_(False)
     transformer.add_adapter(peft_config)
 
