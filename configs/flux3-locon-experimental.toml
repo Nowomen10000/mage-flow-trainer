@@ -1,7 +1,8 @@
 [dataset]
+resolution = 1024
 path = "/home/bluvoll/Escritorio/kanojos"
 source = "latents"
-max_bucket_reso = 1024
+max_bucket_reso = 4096
 
 [train]
 model_family = "flux3"

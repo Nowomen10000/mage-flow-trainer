@@ -339,8 +339,8 @@ def main() -> int:
                    help="AREA budget(s), not side lengths. Several values cache every image at "
                         "every tier, which is what dataset.resolutions then trains on.")
     c.add_argument("--min-bucket-reso", type=int, default=256)
-    c.add_argument("--max-bucket-reso", type=int, default=1920,
-                   help="PER-SIDE cap; 1920 = in spec, 2048 = hard RoPE limit")
+    c.add_argument("--max-bucket-reso", type=int, default=4096,
+                   help="PER-SIDE cap (default: 4096); resolution controls the pixel-area budget separately")
     c.add_argument("--bucket-reso-steps", type=int, default=64)
     c.add_argument("--upscale", action="store_true", help="allow upscaling small images")
     c.add_argument("--multires", action="store_true", help="area tie-break between buckets")

@@ -97,7 +97,7 @@ class DatasetConfig:
     min_source_area: float = 0.0
     min_bucket_reso: int = 256
     # User-selected per-side cap, independent of the resolution area budget.
-    max_bucket_reso: int = 1920
+    max_bucket_reso: int = 4096
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = True
     multires_training: bool = False

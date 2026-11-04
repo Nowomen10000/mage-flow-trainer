@@ -3,7 +3,7 @@
 path = "/path/to/moss-dataset"
 source = "latents"
 resolution = 1024
-max_bucket_reso = 1024
+max_bucket_reso = 4096
 
 [train]
 model_family = "moss_image"

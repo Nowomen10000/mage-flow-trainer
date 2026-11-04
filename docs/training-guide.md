@@ -45,7 +45,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer.tools.cache_latents cache /pa
 
 The cacher loads only the VAE. It uses posterior means, discards the unused decoder for training, and applies **no additional latent normalization**. Cached tensors are `[128,1,H/16,W/16]`, named `*_trainer.safetensors`. Wrong channel counts or bucket shapes are rejected. Set `dataset.source="latents"` to train from cache; images may then be absent. In `auto`, directories containing images use their caches, otherwise the loader scans latent files; choose `encode` explicitly for live VAE encoding.
 
-`resolution` is an area budget; `max_bucket_reso` limits each side. Bucketing still resizes/crops images to the selected dimensions.
+`resolution` is an area budget; `max_bucket_reso` limits each side. Defaults and shipped presets use `resolution=1024` and `max_bucket_reso=4096`: roughly a one-megapixel area budget, with room for tall/wide buckets such as 256×4096. Bucketing still resizes/crops images to the selected dimensions.
 
 ## Cached text and encoder offloading
 

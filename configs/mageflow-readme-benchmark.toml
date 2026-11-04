@@ -15,7 +15,7 @@ prompts = ""
 [dataset]
 path = "/path/to/cached/dataset"
 source = "latents"
-max_bucket_reso = 8192
+max_bucket_reso = 4096
 resolution = 1024
 bucket_no_upscale = false
 

@@ -14,6 +14,7 @@ max_text_tokens = 512
 path = "/path/to/images"
 source = "encode"
 resolution = 1024
+max_bucket_reso = 4096
 
 [adapter]
 kind = "lora"

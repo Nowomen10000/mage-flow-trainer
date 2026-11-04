@@ -10,7 +10,10 @@ gradient_checkpointing = true
 [dataset]
 path = "/path/to/images"
 source = "encode"
-resolutions = [512, 768, 1024]
+resolution = 1024
+max_bucket_reso = 4096
+# For multiple area tiers, replace resolution above with:
+# resolutions = [512, 768, 1024]
 
 [adapter]
 kind = "lora"

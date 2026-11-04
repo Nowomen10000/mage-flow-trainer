@@ -16,6 +16,7 @@ compile = "default"
 path = "/path/to/images"
 source = "latents"  # cache image latents first
 resolution = 1024
+max_bucket_reso = 4096
 
 [adapter]
 kind = "lycoris_lora"

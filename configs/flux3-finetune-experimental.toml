@@ -1,8 +1,8 @@
 [dataset]
 path = "/path/to/flux3-dataset"
 source = "latents"
-resolution = 768
-max_bucket_reso = 2096
+resolution = 1024
+max_bucket_reso = 4096
 
 [train]
 model_family = "flux3"
@@ -12,7 +12,7 @@ text_encoder_path = ""
 vae_path = ""
 tokenizer_path = ""
 output_dir = "output"
-run_name = "flux3-finetune-uint8-adafactor-512-varlen"
+run_name = "flux3-finetune-uint8-adafactor-1024-varlen"
 epochs = 10
 batch_size = 4
 pack_resolutions = true

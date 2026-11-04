@@ -210,7 +210,12 @@ training, but varied caption lengths can cause more recompilation than varlen.
 The Torch and SDNQ pins are unchanged.
 
 The pinned Torch 2.10 Windows build does not support `expandable_segments`.
-The trainer enables it by default on Linux only. On Windows, `install.bat` now
+The trainer enables it by default on Linux only. `install.sh` also generates
+`start-gui.sh` with `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`,
+clearing `PYTORCH_ALLOC_CONF` to avoid conflicting settings. This applies before
+the GUI starts and is inherited by caching, calibration, and queued training.
+Direct CLI training preserves explicit allocator settings.
+On Windows, `install.bat` now
 generates `start-gui.bat` with `backend:cudaMallocAsync` enabled, clearing the
 legacy `PYTORCH_CUDA_ALLOC_CONF` variable to avoid conflicting settings.
 `setlocal` scopes both changes to the launcher and its child processes, including
