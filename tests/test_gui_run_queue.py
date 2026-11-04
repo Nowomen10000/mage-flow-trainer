@@ -412,3 +412,108 @@ def test_english_pack_repair_requires_confirmation(queue_gui, monkeypatch, appro
         assert '--install-english' in launch.argv
         assert not launch.is_training
         assert not gui._running_training
+
+
+@pytest.mark.parametrize('answer', [QtWidgets.QMessageBox.StandardButton.No,
+                                  QtWidgets.QMessageBox.StandardButton.NoButton])
+def test_single_start_declined_opens_queue_without_saving_or_launching(queue_gui, monkeypatch, answer):
+    gui, paths, qapp = queue_gui
+    gui.tab_bar.setCurrentIndex(0)
+    snapshots = [(e.id, e.snapshot.read_bytes(), e.status) for e in gui.run_queue.entries()]
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'question', lambda *a: answer)
+    monkeypatch.setattr(gui, '_training_config', lambda *a: pytest.fail('must not save on cancellation'))
+    gui._start()
+    assert gui.tab_bar.currentIndex() == gui.queue_tab
+    assert gui.runner is None and not FakeRunner.instances and not gui._queue
+    assert snapshots == [(e.id, e.snapshot.read_bytes(), e.status) for e in gui.run_queue.entries()]
+
+
+def test_single_start_confirmed_runs_loaded_config_and_keeps_queue(queue_gui, monkeypatch, tmp_path):
+    gui, paths, qapp = queue_gui
+    current = tmp_path / 'currently-loaded.toml'
+    gui._current_path = current
+    saved = []
+    def persist(flat):
+        bridge.write_toml(current, flat)
+        saved.append(flat)
+        return current
+    monkeypatch.setattr(gui, '_training_config', persist)
+    prompts = []
+    def confirm(*args):
+        prompts.append(args)
+        assert '2 TOMLs' in args[2] and current.name in args[2]
+        assert args[-1] == QtWidgets.QMessageBox.StandardButton.No
+        return QtWidgets.QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'question', confirm)
+    snapshots = [(e.id, e.snapshot.read_bytes(), e.status) for e in gui.run_queue.entries()]
+    gui._start()
+    assert len(prompts) == len(saved) == 1
+    assert '/editor-dataset' in gui.runner.launch.argv  # Cache the editor's dataset.
+    assert not gui._batch_queue_active
+    gui.runner.complete()
+    qapp.processEvents()
+    assert str(current) in gui.runner.launch.argv and gui.runner.launch.is_training
+    gui.runner.complete()
+    qapp.processEvents()
+    assert len(FakeRunner.instances) == 2 and gui.runner is None
+    assert snapshots == [(e.id, e.snapshot.read_bytes(), e.status) for e in gui.run_queue.entries()]
+
+
+def test_single_start_empty_queue_does_not_prompt(queue_gui, monkeypatch, tmp_path):
+    gui, paths, qapp = queue_gui
+    gui.run_queue.list.clear()
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'question', lambda *a: pytest.fail('empty queue'))
+    monkeypatch.setattr(gui, '_training_config', lambda *a: tmp_path / 'single.toml')
+    gui._start()
+    assert len(FakeRunner.instances) == 1 and gui.runner.isRunning()
+
+
+def test_queue_final_save_snapshots_each_run_before_graph_reset(queue_gui, tmp_path):
+    import json
+    from PySide6 import QtGui
+    gui, paths, qapp = queue_gui
+    for i, path in enumerate(paths):
+        path.write_text(f'[train]\nrun_name="run{i}"\noutput_dir="{tmp_path.as_posix()}"\n'
+                        f'[dataset]\npath="/dataset{i}"\n')
+    gui.run_queue.list.clear()
+    gui.run_queue.add_paths(paths)
+    gui._start_queue()
+    for i in range(2):
+        gui.runner.complete()  # cache finishes
+        qapp.processEvents()
+        assert gui._running_training and not gui.metrics.latest
+        gui.tab_bar.setCurrentIndex(gui.queue_tab)  # Capture a hidden metrics tab.
+        gui.runner.metricsSignal.emit(f'e0 step {i+1}/2 loss 0.{i+1} lr 1e-4 2.0s/it peak 8.0GB')
+        directory = tmp_path / f'run{i}'
+        marker = 'BLUFLOW_FINAL_SAVE ' + json.dumps({'output_dir': str(directory), 'step': i+1})
+        gui.runner.metricsSignal.emit(marker)
+        path = directory / 'metrics-final.png'
+        image = QtGui.QImage(str(path))
+        assert not image.isNull()
+        assert not gui.metrics.pending and gui.metrics.latest['step'] == i+1
+        assert gui.tab_bar.currentIndex() == gui.queue_tab
+        before = path.read_bytes()
+        gui.runner.metricsSignal.emit(marker)  # Duplicate notification is harmless.
+        assert path.read_bytes() == before
+        gui.runner.complete()
+        qapp.processEvents()
+    assert [e.status for e in gui.run_queue.entries()] == ['Completed', 'Completed']
+
+
+def test_metrics_snapshot_failure_does_not_stop_queue(queue_gui, monkeypatch):
+    import json
+    from trainer.gui.widgets import PROJECT_ROOT
+    gui, paths, qapp = queue_gui
+    gui._start_queue()
+    gui.runner.complete()
+    qapp.processEvents()
+    def fail(path):
+        raise OSError('disk full')
+    monkeypatch.setattr(gui.metrics, 'save_snapshot', fail)
+    gui.runner.metricsSignal.emit('BLUFLOW_FINAL_SAVE ' + json.dumps({
+        'output_dir': str(PROJECT_ROOT / 'output/run0'), 'step': 1}))
+    assert not gui._metrics_snapshot_saved
+    gui.runner.complete()
+    qapp.processEvents()
+    assert gui.run_queue.entries()[0].status == 'Completed'
+    assert '/dataset1' in gui.runner.launch.argv

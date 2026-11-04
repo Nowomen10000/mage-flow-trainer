@@ -48,14 +48,21 @@ def _attention(q, k, v, rope, heads, packed):
     q = _rotate(q.reshape(shape), rope).transpose(1, 2)
     k = _rotate(k.reshape(shape), rope).transpose(1, 2)
     v = v.reshape(shape).transpose(1, 2)
-    lengths, cu, longest = packed
+    lengths, cu, longest, backend = packed
     if cu is not None:
+        q = q[0].transpose(0, 1).contiguous().to(v.dtype)
+        k = k[0].transpose(0, 1).contiguous().to(v.dtype)
+        v = v[0].transpose(0, 1).contiguous()
+        if backend == "flash_attn_2":
+            from flash_attn import flash_attn_varlen_func
+
+            return flash_attn_varlen_func(
+                q, k, v, cu, cu, longest, longest, dropout_p=0.0, causal=False,
+            ).flatten(1)[None]
         from torch.nn.attention.varlen import varlen_attn
 
         return varlen_attn(
-            q[0].transpose(0, 1).contiguous().to(v.dtype),
-            k[0].transpose(0, 1).contiguous().to(v.dtype),
-            v[0].transpose(0, 1).contiguous(),
+            q, k, v,
             cu,
             cu,
             longest,
@@ -255,11 +262,11 @@ class MOSSImage(nn.Module):
             gradient_checkpointing=gradient_checkpointing, compile_mode=compile_mode,
         )
         if (
-            attention_backend not in ("sdpa", "torch_varlen")
+            attention_backend not in ("sdpa", "torch_varlen", "flash_attn_2")
             or checkpoint_blocks is not None
         ):
             raise ValueError(
-                "MOSS requires SDPA or torch_varlen and all-block checkpointing"
+                "MOSS requires SDPA, torch_varlen or flash_attn_2 and all-block checkpointing"
             )
         self.checkpointing = gradient_checkpointing
         self.attention_backend = attention_backend
@@ -327,14 +334,14 @@ class MOSSImage(nn.Module):
 
         def packed(lens):
             cu = None
-            if self.attention_backend == "torch_varlen":
+            if self.attention_backend in ("torch_varlen", "flash_attn_2"):
                 cu = F.pad(
                     torch.tensor(lens, device=xs[0].device, dtype=torch.int32).cumsum(
                         0, dtype=torch.int32
                     ),
                     (1, 0),
                 )
-            return lens, cu, max(lens)
+            return lens, cu, max(lens), self.attention_backend
 
         # Trainer timesteps are normalized sigma; the native MOSS sinusoid uses 0..1000.
         times = timestep.float() * 1000

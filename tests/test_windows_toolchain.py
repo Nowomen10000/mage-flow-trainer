@@ -254,6 +254,19 @@ def test_windows_cli_blocks_varlen_and_packing(monkeypatch, settings):
     assert TrainConfig(model_family="moss_image", batch_size={"512": 4, "1024": 2}).batch_size[512] == 4
 
 
+def test_windows_moss_allows_external_flash_packing_and_compile(monkeypatch):
+    from trainer.training.config import TrainConfig, Config, validate_model_options
+    from trainer.data.dataset import DatasetConfig
+    monkeypatch.setattr(tools, "sys", SimpleNamespace(platform="win32"))
+    train = TrainConfig(model_family="moss_image", attention_backend="flash_attn_2",
+                        pack_resolutions=True, compile="default", batch_size=6)
+    cfg = Config(train=train, dataset=DatasetConfig(path="images"))
+    validate_model_options(cfg)
+    assert cfg.train.pack_resolutions
+    with pytest.raises(ValueError, match="Compile requires"):
+        TrainConfig(model_family="flux3", attention_backend="flash_attn_2", compile="default")
+
+
 def test_preflight_reports_failure_without_torch_import(monkeypatch, tmp_path, capsys):
     config = tmp_path / "config.toml"
     config.write_text('[train]\ncompile="default"\n')

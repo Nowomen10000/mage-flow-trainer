@@ -30,6 +30,7 @@ REQUIRED = [
     ("numpy", "numpy"),
 ]
 OPTIONAL = [
+    ("flash_attn", "flash-attn (packed attention)"),
     ("PySide6", "PySide6 (GUI)"),
     ("scipy", "scipy (optimal transport)"),
     ("triton", "triton"),

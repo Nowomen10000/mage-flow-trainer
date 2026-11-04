@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sys
 import hashlib
+import json
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -162,7 +163,7 @@ _RULES = {
 
     "train.compile_dynamic": lambda c: bool(c.get("train.compile")),
     "train.compile_regional": lambda c: bool(c.get("train.compile")),
-    "train.pack_resolutions": lambda c: sys.platform != "win32",
+    "train.pack_resolutions": lambda c: sys.platform != "win32" or c.get("train.attention_backend") == "flash_attn_2",
     "train.moss_checkpoint_inside_compile": lambda c: (
         c.get("train.model_family") in ("auto", "moss_image")
         and bool(c.get("train.compile")) and bool(c.get("train.gradient_checkpointing"))),
@@ -914,7 +915,8 @@ class TrainingGUI(QtWidgets.QWidget):
         # Preserve incompatible loaded TOMLs, block Start through validation,
         # and provide an explicit repair action instead of silently rewriting.
         self.windows_attention_btn.setVisible(windows and (
-            flat.get("train.attention_backend") == "torch_varlen" or flat.get("train.pack_resolutions")))
+            flat.get("train.attention_backend") == "torch_varlen" or (
+                flat.get("train.pack_resolutions") and flat.get("train.attention_backend") != "flash_attn_2")))
         self.timestep_plot.set_config(flat)
         has_subsets = self.editors["dataset.subsets"].table.rowCount() > 0
         for key in ("dataset.path", "dataset.num_repeats"):
@@ -1012,6 +1014,30 @@ class TrainingGUI(QtWidgets.QWidget):
         if not is_progress:
             self._remember_queue_output(line)
 
+    def _handle_metrics(self, line):
+        self.metrics.parse_and_update(line)
+        prefix = "BLUFLOW_FINAL_SAVE "
+        if not (line.startswith(prefix) and self._batch_queue_active
+                and self._running_training and not self._queue_cancelled
+                and not getattr(self, "_metrics_snapshot_saved", False)):
+            return
+        try:
+            event = json.loads(line[len(prefix):])
+            entry = self.run_queue.entry(self._active_queue_index)
+            train = bridge.read_toml(entry.snapshot).get("train", {})
+            directory = Path(train.get("output_dir", "output")) / train.get("run_name", "mageflow")
+            if not directory.is_absolute():
+                directory = PROJECT_ROOT / directory
+            if Path(event["output_dir"]).resolve() != directory.resolve():
+                raise ValueError("Final-save output folder does not match the queued TOML")
+            path = directory / "metrics-final.png"
+            self.metrics.save_snapshot(path)
+            self._metrics_snapshot_saved = True
+            self.log(f"Saved final metrics screenshot: {path}")
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, RuntimeError) as exc:
+            # An image export must not abort an otherwise successful training queue.
+            self.log(f"Could not save final metrics screenshot: {exc}")
+
     _last_was_progress = False
 
     def _run(self, launch, training=True, on_failure="stop"):
@@ -1031,11 +1057,12 @@ class TrainingGUI(QtWidgets.QWidget):
         self.runner.logSignal.connect(self._remember_queue_output)
         self.runner.errorSignal.connect(self._remember_queue_output)
         self.runner.progressSignal.connect(self._handle_output)
-        self.runner.metricsSignal.connect(self.metrics.parse_and_update)
+        self.runner.metricsSignal.connect(self._handle_metrics)
         self.runner.finishedSignal.connect(self._finished)
         self.log("\n" + "=" * 60 + f"\n{launch.label}\n" + " ".join(launch.argv) + "\n" + "=" * 60)
         self.tab_bar.setCurrentIndex(self.tab_bar.count() - (2 if training else 1))
         if training:
+            self._metrics_snapshot_saved = False
             self.metrics.start_run()
             prevent_sleep(True)
         self.start_btn.setVisible(False)
@@ -1215,6 +1242,9 @@ class TrainingGUI(QtWidgets.QWidget):
         self._run(calibration_launch(path), training=False)
 
     def _start(self):
+        if self.runner is not None or self._queue or self._batch_queue_active:
+            self.log("Wait for the current job before starting another run.")
+            return
         if self.pipeline_chk.isChecked():
             self._start_pipeline()
             return
@@ -1223,6 +1253,20 @@ class TrainingGUI(QtWidgets.QWidget):
         if not ok:
             self.log(f"CONFIG ERROR: {err}")
             return
+        queued = self.run_queue.entries()
+        if queued:
+            name = self._current_path.name if self._current_path else flat.get("train.run_name", "current settings")
+            answer = QtWidgets.QMessageBox.question(
+                self, "TOMLs are in the queue",
+                f"There are {len(queued)} TOMLs in Run Queue.\n\n"
+                f"Continue training only the currently loaded TOML: {name}?\n\n"
+                "Yes starts this single run and leaves the queued TOMLs in the queue. "
+                "No cancels this start and opens Run Queue.",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No)
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                self.tab_bar.setCurrentIndex(self.queue_tab)
+                return
         # The trainer reads a file, so what runs is exactly what is on disk -- no hidden in-memory
         # variant that a later "why did it use that value" cannot account for. It goes through
         # `_persist` for the same reason Save does: starting a run must not rewrite a config that

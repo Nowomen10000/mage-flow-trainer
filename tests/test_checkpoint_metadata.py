@@ -117,6 +117,8 @@ class CheckpointMetadataTests(unittest.TestCase):
                 (root / 'state.json').write_text(json.dumps(
                     {'global_step': 20, 'source_checkpoint': original}))
                 trainer = Trainer.__new__(Trainer)
+                from trainer.training.timing import TrainingTiming
+                trainer.timing = TrainingTiming()
                 from trainer.training.flow_rng import FlowRNG
                 trainer.flow_rng = FlowRNG(42, 0, 1, 'cpu')
                 trainer.source_checkpoint = {'name': 'current-init.safetensors', 'md5': 'init-hash'}
@@ -125,6 +127,7 @@ class CheckpointMetadataTests(unittest.TestCase):
                 trainer.cfg = SimpleNamespace(train=SimpleNamespace(gradient_accumulation_steps=1))
                 trainer.steps_per_epoch = 10
                 trainer._resume(folder)
+                self.assertFalse(trainer.timing.history_complete)
                 if original is not None:
                     self.assertEqual(trainer.source_checkpoint, original)
                 else:

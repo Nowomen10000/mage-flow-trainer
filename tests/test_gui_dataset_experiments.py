@@ -130,6 +130,22 @@ def test_windows_blocks_packing_and_varlen_with_explicit_repair(gui, monkeypatch
     assert bridge.validate(gui.collect())[0]
 
 
+def test_windows_moss_external_flash_enables_packing(gui, monkeypatch):
+    from types import SimpleNamespace
+    from trainer.gui import app as gui_module
+    from trainer.tools import windows_toolchain
+    monkeypatch.setattr(gui_module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(windows_toolchain, "sys", SimpleNamespace(platform="win32"))
+    gui._apply(bridge.defaults() | {
+        "dataset.path": "/images", "train.model_family": "moss_image",
+        "train.attention_backend": "flash_attn_2", "train.pack_resolutions": True,
+        "train.compile": "default", "train.batch_size": 6,
+    })
+    assert gui.editors["train.pack_resolutions"].widget.isEnabled()
+    assert gui.windows_attention_btn.isHidden()
+    assert bridge.validate(gui.collect())[0]
+
+
 def test_moss_sampler_locks_shared_controls_and_roundtrips(gui, tmp_path):
     from trainer.training.config import load_config
     gui._apply(bridge.defaults() | {"dataset.path": "/images", "flow.sigmoid_scale": 3,

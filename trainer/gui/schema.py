@@ -85,9 +85,9 @@ SPEC: dict[str, Spec] = {
     "train.offload_text_encoder": _spec("Offload text encoder", "Move the live encoder to GPU for caption encoding and back to CPU before transformer execution. Trades transfers for lower GPU residency.", lambda: F.BoolEditor("Offload text encoder"), inline_label=True),
     "train.compile_text_encoder": _spec("Compile Loaded Text Encoder", "Compile Qwen3 decoder blocks with dynamic shapes. Independent of transformer compilation and SDNQ. First encoding includes compilation; disable text encoder quantization for BF16.", lambda: F.BoolEditor("Compile Loaded Text Encoder"), inline_label=True),
     "train.text_encoder_embedding_only": _spec("Loaded Text Encoder: embedding-only output", "Skip unused logits and intermediate hidden states. Checks equivalence to the original output on the first batch; disabled for Cached Text Encoder.", lambda: F.BoolEditor("Loaded Text Encoder: embedding-only output"), inline_label=True),
-    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires packed attention, integer batch size, no curriculum or OT. Temporarily disabled on Windows; ordinary multi-resolution buckets remain supported.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
+    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires packed attention, integer batch size, no curriculum or OT. On Windows, MOSS packing requires flash_attn_2 and a compatible Flash Attention wheel.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
     "train.checkpoint_blocks": _spec("Checkpoint blocks", "Zero-based block indices; blank checkpoints all blocks.", lambda: F.IntListEditor("e.g. 0, 2, 4")),
-    "train.attention_backend": _spec("Attention backend", "torch_varlen uses PyTorch's built-in packed attention and requires working GPU kernels. Temporarily disabled on Windows; use SDPA. MOSS/Flux3 SDPA processes packed samples separately; Mage uses padded attention.", lambda: F.ChoiceEditor(["sdpa", "torch_varlen", "flash_attn_2", "flash_attn_3"])),
+    "train.attention_backend": _spec("Attention backend", "torch_varlen uses PyTorch's built-in packed attention and is disabled on Windows. MOSS can use flash_attn_2 for packed training, including compilation, with a compatible external Flash Attention wheel. Startup checks forward and backward GPU kernels. SDPA remains available without an extra wheel.", lambda: F.ChoiceEditor(["sdpa", "torch_varlen", "flash_attn_2", "flash_attn_3"])),
     "train.max_text_tokens": _spec("Maximum text tokens", "Caption token budget after removing the Qwen3-VL system prefix.", lambda: F.IntEditor(1, 4096)),
     # ------------------------------------------------------------------ train
     "train.moss_qkv_format": _spec(
@@ -242,7 +242,7 @@ SPEC: dict[str, Spec] = {
         lambda: F.ChoiceEditor(["auto", "plain", "bar", "off"])),
     "train.compile": _spec(
         "torch.compile",
-        'Compile the shared block callable. Supports default or max-autotune-no-cudagraphs with SDPA or torch_varlen. First steps include compilation.',
+        'Compile the shared block callable. Supports default or max-autotune-no-cudagraphs with SDPA, torch_varlen, or flash_attn_2 for MOSS. First steps include compilation.',
         lambda: F.ChoiceEditor(["off", "default", "max-autotune-no-cudagraphs"],
                                [None, "default", "max-autotune-no-cudagraphs"])),
     "train.compile_dynamic": _spec(

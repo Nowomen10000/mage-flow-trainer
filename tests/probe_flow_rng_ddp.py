@@ -22,6 +22,8 @@ def main():
     optimizer=torch.optim.AdamW(model.parameters())
     model,optimizer=acc.prepare(model,optimizer)
     trainer=Trainer.__new__(Trainer)
+    from trainer.training.timing import TrainingTiming
+    trainer.timing = TrainingTiming()
     trainer.accelerator=acc
     trainer.cfg=NS(train=NS(run_name='rng',gradient_accumulation_steps=1),quant=NS(mode='none'))
     trainer.out_dir=Path(sys.argv[1])

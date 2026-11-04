@@ -159,23 +159,64 @@ moss_checkpoint_inside_compile = false  # default; true opts into the experiment
 Existing TOMLs without this setting use the lower-memory default. Text-refinement
 blocks remain eager; this switch changes the main blocks' checkpoint boundary.
 
-On native Windows, **`torch_varlen` and `train.pack_resolutions=true` are
-temporarily blocked** in both GUI and CLI. Use SDPA and leave **Pack native
-resolutions** off. Ordinary multi-resolution buckets and per-tier batch sizes
-still work. The GUI disables these choices; loading an incompatible TOML blocks
-Start and offers an explicit button to select SDPA and turn packing off.
+On native Windows, **MOSS packed training is available with `flash_attn_2`**
+and a compatible Flash Attention wheel. Select that backend, then enable
+**Pack native resolutions**. Compilation and ordinary multi-resolution tiers can
+be used together. Startup tests the selected backend's GPU forward **and backward**
+before loading models or building text embeddings; importing the package alone
+is not enough. SDPA remains the option without an extra wheel, with packing off.
 
-On supported platforms, `torch_varlen` needs working GPU forward **and backward**
-kernels, not just the Python module. Training checks these before loading models
-or building caches.
+Validated on an RTX 4090 with Python 3.12, Torch 2.10.0+cu128, SDNQ 0.2.4 and
+Flash Attention 2.8.3 from the community
+[v0.7.13 Windows release](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.7.13):
+
+```bat
+venv\Scripts\python.exe -m pip install --no-deps "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.13/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-win_amd64.whl"
+```
+
+`install.bat` installs this release automatically after the base dependencies,
+selecting a SHA256-pinned wheel for the venv's Python 3.11, 3.12 or 3.13. New
+Windows installs prefer Python 3.12; existing venvs keep their interpreter.
+The installer checks the Torch/CUDA versions and verifies that the native
+extension imports. Training startup still checks GPU forward and backward.
+For an existing install, run `venv\Scripts\python.exe -m trainer.tools.install_windows_flash`.
+The manual command above is specific to Python 3.12 and the pinned Torch stack.
+Other GPU architectures need their own forward/backward validation.
+
+```toml
+[train]
+attention_backend = "flash_attn_2"
+pack_resolutions = true
+batch_size = 6
+compile = "default"
+```
+
+The Windows smoke test completed six compiled Balanced LoRA updates with mixed
+512/768/1024 resolution tiers and six images per batch. Separate kernel checks
+covered BF16/FP16 outputs and gradients against SDPA, compiled execution, and
+isolation between packed samples. These tests do not establish long-run convergence.
+
+`torch_varlen` still selects PyTorch's own implementation and remains disabled
+on Windows. Installing the external wheel does not change that backend; select
+`flash_attn_2` explicitly for MOSS. On supported platforms, `torch_varlen` needs
+working GPU forward **and backward** kernels, not just the Python module.
 Native Windows/MSVC builds disable Flash Attention in both
 [PyTorch 2.10](https://github.com/pytorch/pytorch/blob/v2.10.0/CMakeLists.txt) and
 [2.14.1](https://github.com/pytorch/pytorch/blob/v2.14.1/CMakeLists.txt).
-A version upgrade alone therefore does not fix varlen on an RTX 3060/4090. Use
-`train.attention_backend = "sdpa"` on an unsupported build, or a compatible
-Linux/WSL2 environment. SDPA remains valid for MOSS, including multi-resolution
+A version upgrade alone therefore does not enable PyTorch's native varlen kernels.
+Use the external MOSS backend above, SDPA, or a compatible Linux/WSL2 environment.
+SDPA remains valid for MOSS, including multi-resolution
 training, but varied caption lengths can cause more recompilation than varlen.
 The Torch and SDNQ pins are unchanged.
+
+The pinned Torch 2.10 Windows build does not support `expandable_segments`.
+The trainer enables it by default on Linux only; Windows uses the native CUDA
+allocator without requesting an unsupported feature. This removes the warning,
+but does not provide Linux's reduction in allocation fragmentation. Explicit
+`PYTORCH_ALLOC_CONF` or `PYTORCH_CUDA_ALLOC_CONF` settings are preserved.
+`backend:cudaMallocAsync` is a separate optional allocator, not an implementation
+of expandable segments; measure its effect on your workload before relying on
+it for VRAM savings. See [PyTorch allocator settings](https://docs.pytorch.org/docs/2.10/notes/cuda.html#optimizing-memory-usage-with-pytorch-alloc-conf).
 
 Windows training automatically finds installed C++ Build Tools using Microsoft's
 `vswhere` and loads the x64 compiler environment, including include/library
@@ -307,6 +348,16 @@ stochastic rounding, and dynamic loss threshold; the GUI locks those fields.
 Switch to Custom to edit them. Omitted `preset` means Custom, so existing TOMLs
 keep their settings and `use_quantized_matmul = "auto"` still means off.
 The preset and resolved settings are saved in checkpoint metadata.
+
+Checkpoint `training_state` also records UTC `training_started_at`,
+`session_started_at`, and `checkpoint_saved_at` timestamps, plus
+`session_elapsed_seconds` and cumulative `training_elapsed_seconds`.
+The save timestamp and durations are captured immediately before weight export;
+they include process initialization, loading, compilation, and earlier saves,
+but not the current export's duration or gaps between resumed sessions.
+Exact resumes preserve cumulative time through the optimizer state; weights-only
+initialization starts a new timer. Older resume states start counting from the
+new session and set `timing_history_complete` to false.
 
 Text-encoder and optimizer quantization remain separate. To keep cached text
 embeddings from changing storage dtype when switching presets, select an explicit
@@ -465,12 +516,22 @@ even when Autosave is off. **Run Queue → Add TOMLs** snapshots existing files.
 Later source-file edits do not change queued settings. Give each run a distinct
 output directory/run name; relative paths resolve from the trainer directory.
 
+If Run Queue contains TOMLs and you press **Start Training** for the current
+editor, a confirmation asks whether to start only the loaded TOML. **Yes** runs
+that configuration and keeps the queue intact. **No** (or closing the dialog)
+starts nothing and switches to **Run Queue**.
+
 You can add runs while training and reorder or remove pending entries; the active
 job is protected. Errors stop the queue by default. Enable **Continue queue after
 errors** before starting to skip failed configs. Failed caching skips that config's
 training, and **Stop** always cancels the remaining jobs. Select a failed entry to
 read its error or **Retry selected** to retry its saved settings. The queue and
 snapshots last for the current GUI session.
+
+After each queued run successfully writes its final checkpoint, the GUI saves
+`metrics-final.png` in that run's output directory. The image includes the latest
+metrics even when another tab is selected, before the next run resets the graphs.
+Image export failures are logged and do not stop the queue.
 
 **Live Metrics** includes total elapsed time for the current training process,
 including loading, text caching, compilation, and saves. Separate latent-cache

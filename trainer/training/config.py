@@ -293,8 +293,11 @@ class TrainConfig:
                 raise ValueError("checkpoint_blocks requires gradient_checkpointing and a list")
             if any(type(i) is not int or i < 0 for i in self.checkpoint_blocks) or len(set(self.checkpoint_blocks)) != len(self.checkpoint_blocks):
                 raise ValueError("checkpoint_blocks must contain unique nonnegative indices")
-        if self.compile and (not self.compile_regional or self.attention_backend not in ("sdpa", "torch_varlen") or self.compile not in ("default", "max-autotune-no-cudagraphs")):
-            raise ValueError("Mage-Flow compile requires regional SDPA and default/max-autotune-no-cudagraphs mode")
+        compile_backends = ("sdpa", "torch_varlen")
+        if resolve_model_family(self.model_path, self.model_family) == "moss_image":
+            compile_backends += ("flash_attn_2",)
+        if self.compile and (not self.compile_regional or self.attention_backend not in compile_backends or self.compile not in ("default", "max-autotune-no-cudagraphs")):
+            raise ValueError("Compile requires regional SDPA/torch_varlen (or flash_attn_2 for MOSS) and default/max-autotune-no-cudagraphs mode")
         if isinstance(self.batch_size, dict):
             self.batch_size = {int(k): int(v) for k, v in self.batch_size.items()}
         if self.compressed_adaln_dtype not in ("float32", "bfloat16"):
@@ -444,8 +447,9 @@ def validate_model_options(cfg):
         if (cfg.flow.dual_timestep or cfg.self_flow.enabled or cfg.rti.enabled or
             cfg.perceptual.enabled or cfg.adversarial.enabled or cfg.preserve.enabled or cfg.curriculum.phases):
             raise ValueError('Flux3/MOSS supports text-to-image flow training without RTI, Self-Flow, dual timestep, decoded losses or curricula')
-        if cfg.train.attention_backend not in ('sdpa', 'torch_varlen') or cfg.train.checkpoint_blocks is not None:
-            raise ValueError('Flux3/MOSS requires SDPA or torch_varlen and all-block checkpointing')
+        backends = ('sdpa', 'torch_varlen', 'flash_attn_2') if cfg.train.model_family == 'moss_image' else ('sdpa', 'torch_varlen')
+        if cfg.train.attention_backend not in backends or cfg.train.checkpoint_blocks is not None:
+            raise ValueError('Flux3/MOSS requires SDPA or torch_varlen (also flash_attn_2 for MOSS) and all-block checkpointing')
         if cfg.train.compile_text_encoder or cfg.train.text_encoder_embedding_only:
             raise ValueError('Flux3/MOSS text extraction requires compile_text_encoder=false and text_encoder_embedding_only=false')
     if cfg.perceptual.enabled:

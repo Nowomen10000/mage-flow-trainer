@@ -12,6 +12,32 @@ from trainer.gui.metrics import LiveMetricsWidget, STEP_RE
 from trainer.training.config import TrainConfig
 
 
+def test_snapshot_renders_hidden_metrics_and_flushes_all_pending(tmp_path):
+    from PySide6 import QtGui
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    widget = LiveMetricsWidget()
+    widget.resize(640, 480)
+    widget.ensurePolished()
+    widget.layout().activate()
+    original_size = widget.size()
+    widget.max_pending_per_tick = 1
+    try:
+        for step in range(1, 4):
+            widget.parse_and_update(f'e0 step {step}/3 loss 0.{step} lr 1e-4 2.0s/it peak 8.0GB')
+        assert widget.isHidden() and len(widget.pending) == 3
+        path = tmp_path / 'run' / 'metrics-final.png'
+        widget.save_snapshot(path)
+        image = QtGui.QImage(str(path))
+        assert not image.isNull() and image.width() >= 1280 and image.height() >= 900
+        assert not widget.pending and not widget.timer.isActive()
+        assert len(widget.graphs['loss']['widget'].lines[0]['data']) == 3
+        assert '3/3' in widget.header.text()
+        assert widget.size() == original_size and widget.isHidden()
+    finally:
+        widget.deleteLater()
+        app.processEvents()
+
+
 @pytest.mark.parametrize('auxiliary', [False, True])
 def test_current_training_log_reaches_graphs(auxiliary, monkeypatch, capsys):
     from trainer.training.train import Trainer

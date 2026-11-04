@@ -92,10 +92,13 @@ def test_reference_forward_and_gradients():
         torch.testing.assert_close(p.grad, q.grad, atol=2e-6, rtol=2e-4)
 
 
-def test_packed_checkpoint_isolation(monkeypatch):
+@pytest.mark.parametrize("backend", ["torch_varlen", "flash_attn_2"])
+def test_packed_checkpoint_isolation(monkeypatch, backend):
     from torch.nn.attention import varlen
 
-    def attn(q, k, v, cq, ck, mq, mk):
+    def attn(q, k, v, cq, ck, mq, mk, **kwargs):
+        assert not kwargs.get("causal", False)
+        assert kwargs.get("dropout_p", 0.0) == 0.0
         bounds = cq.tolist()
         return torch.cat(
             [
@@ -109,6 +112,12 @@ def test_packed_checkpoint_isolation(monkeypatch):
         )
 
     monkeypatch.setattr(varlen, "varlen_attn", attn)
+    if backend == "flash_attn_2":
+        import sys
+        from types import ModuleType
+        flash = ModuleType("flash_attn")
+        flash.flash_attn_varlen_func = attn
+        monkeypatch.setitem(sys.modules, "flash_attn", flash)
     model = tiny()
     xs, t, text, mask = inputs()
     model.configure_execution(False)
@@ -116,7 +125,7 @@ def test_packed_checkpoint_isolation(monkeypatch):
     sum(y.square().mean() for y in expected).backward()
     grads = {n: p.grad.clone() for n, p in model.named_parameters()}
     model.zero_grad(set_to_none=True)
-    model.configure_execution(True, attention_backend="torch_varlen")
+    model.configure_execution(True, attention_backend=backend)
     actual = model(xs, t, (text, mask))[0]
     sum(y.square().mean() for y in actual).backward()
     for a, b in zip(actual, expected):
@@ -149,6 +158,9 @@ def test_compile_keeps_mode_options_with_safe_reductions(monkeypatch, mode):
 def test_compiled_checkpoint_matches_eager_training_and_eval(monkeypatch, checkpointing, inside_compile):
     # Exercise the captured checkpoint operation with AOTAutograd on CPU;
     # full-size BF16/Inductor parity is covered by the GPU replay benchmark.
+    # This is a CPU test. Dynamo may initialize CUDA during compilation on a
+    # GPU-equipped host; checkpoint's default CUDA RNG tracking would reject it.
+    monkeypatch.setattr(torch.utils.checkpoint.DefaultDeviceType, "_default_device_type", "cpu")
     real_compile = torch.compile
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: real_compile(
         fn, backend="aot_eager", dynamic=True, fullgraph=True
@@ -177,7 +189,7 @@ def test_compiled_checkpoint_matches_eager_training_and_eval(monkeypatch, checkp
 
 
 @pytest.mark.skipif(os.environ.get("MAGEFLOW_GPU_TESTS") != "1", reason="GPU opt-in")
-@pytest.mark.parametrize("backend", ["sdpa", "torch_varlen"])
+@pytest.mark.parametrize("backend", ["sdpa", "torch_varlen", "flash_attn_2"])
 @pytest.mark.parametrize("quant_mode", ["frozen", "training"])
 def test_compiled_moss_quantized_checkpoint_backward(backend, quant_mode):
     from trainer.training.params import AdapterConfig, apply_adapter

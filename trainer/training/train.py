@@ -14,13 +14,19 @@ from dataclasses import replace
 from itertools import islice
 from pathlib import Path
 
+from .timing import TrainingTiming, utc_now
+
+_SESSION_STARTED_AT = utc_now()
+_SESSION_STARTED_COUNTER = time.perf_counter()
+
 # Must precede `import torch`: the caching allocator parses this once, at first CUDA use.
 # Bucketing hands the allocator a different tensor shape per bucket (55 of them on a two-tier
 # texture run), which is the textbook way to fragment it -- measured 3.35 GB of reserved-but-
 # unallocated on a shape-varying probe, versus 0.74 GB with expandable segments. That gap is the
-# difference between fitting and OOM at the batch sizes this trainer targets. `setdefault` so an
-# explicitly-set value always wins.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# difference between fitting and OOM at the batch sizes this trainer targets on Linux.
+# The pinned Windows wheel omits support. Preserve either explicit allocator env spelling.
+from .allocator import configure_allocator
+configure_allocator()
 
 # SDNQ may initialize Triton while importing. Choose the Windows C launcher
 # compiler before that happens; MSVC remains available for Inductor's C++ code.
@@ -133,6 +139,7 @@ def _text_cache_batches(items, size):
 
 class Trainer:
     def __init__(self, cfg: Config, config_path: str | Path | None = None):
+        self.timing = TrainingTiming(_SESSION_STARTED_AT, _SESSION_STARTED_COUNTER)
         from .config import validate_model_options
         validate_model_options(cfg)
         from ..tools.windows_toolchain import prepare_windows_toolchain, check_windows_triton_compiler, check_windows_cpp_language
@@ -1388,6 +1395,8 @@ class Trainer:
             if isinstance(batch_size, dict) else batch_size * batch_scale
         )
         runtime = optimizer_snapshot(self.optimizer)
+        timing = self.timing.snapshot()
+        runtime.update(timing)
         runtime.update(
             save_tag=tag,
             successful_updates=self.successful_updates, skipped_updates=self.skipped_updates,
@@ -1415,9 +1424,15 @@ class Trainer:
                             "successful_updates": self.successful_updates, "skipped_updates": self.skipped_updates,
                             "source_checkpoint": self.source_checkpoint,
                             "adapter_initialization": getattr(self, "adapter_initialization", None),
+                            "training_timing": timing,
                             "flow_rng_version": self.flow_rng.version}, indent=2)
             )
         _emit(self, f"saved {written} ({n} tensors)")
+        if tag == "final":
+            # GUI queue snapshots only after a successful final checkpoint write.
+            _emit(self, "BLUFLOW_FINAL_SAVE " + json.dumps({
+                "output_dir": str(self.out_dir.resolve()), "step": self.global_step,
+            }))
         self._prune_checkpoints()
 
     def _prune_checkpoints(self) -> None:
@@ -1529,6 +1544,7 @@ class Trainer:
                 f"save_full_state disabled, so it can be used for inference but not resumed."
             )
         saved_state = json.loads(state_file.read_text())
+        self.timing.resume(saved_state.get("training_timing"))
         self.adapter_initialization = saved_state.get("adapter_initialization")
         self.flow_rng.load(acc_dir, required='flow_rng_version' in saved_state)
         from sdnq.training import SDNQTensor

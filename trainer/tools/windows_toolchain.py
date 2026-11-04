@@ -164,10 +164,11 @@ PyMODINIT_FUNC PyInit__bluflow_c_probe(void) {
 
 
 def validate_windows_attention(backend, pack_resolutions):
-    if sys.platform == "win32" and (backend == "torch_varlen" or pack_resolutions):
+    if sys.platform == "win32" and (backend == "torch_varlen" or (pack_resolutions and backend != "flash_attn_2")):
         raise ValueError(
-            "torch_varlen and train.pack_resolutions are temporarily disabled on Windows. "
-            "Use train.attention_backend='sdpa' and train.pack_resolutions=false. "
+            "torch_varlen and packing without flash_attn_2 are temporarily disabled on Windows. "
+            "Use train.attention_backend='flash_attn_2' with a compatible Flash Attention wheel "
+            "for MOSS packed training, or 'sdpa' with train.pack_resolutions=false. "
             "Ordinary multi-resolution buckets remain supported."
         )
 

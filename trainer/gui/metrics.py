@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import time
 from collections import deque
+from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
@@ -278,3 +279,29 @@ class LiveMetricsWidget(QtWidgets.QWidget):
     def _append(self, graph, line, x, y):
         g = self.graphs[graph]
         g["widget"].append_data(g["lines"][line], x, y)
+
+    def save_snapshot(self, path):
+        """Render the metrics tab even when another tab is selected."""
+        while self.pending:
+            self._flush()
+        self._set_header()
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.ensurePolished()
+        self.layout().activate()
+        original_size = self.size()
+        try:
+            self.resize(max(self.width(), 1280), max(self.height(), 900))
+            self.layout().activate()
+            pixmap = self.grab()
+            target = QtCore.QSaveFile(str(path))
+            if not target.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
+                raise OSError(target.errorString())
+            if not pixmap.save(target, "PNG"):
+                target.cancelWriting()
+                raise OSError("Could not encode metrics PNG")
+            if not target.commit():
+                raise OSError(target.errorString())
+        finally:
+            self.resize(original_size)
+            self.layout().activate()
