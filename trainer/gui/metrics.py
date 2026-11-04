@@ -6,11 +6,11 @@ The plumbing (batched pending queue, single-shot repaint timer, `GraphPanel`) fo
 One line carries everything:
 
     e3 step 1410/3000 (47%)  loss 0.0712 (mse 0.0650 + hf 0.0062)  ot 0.83  lr 2.71e-05  \
-        1.80s/it  peak 8.1GB  eta 47m34s
+        1.80s/it  peak_alloc 8.1GiB  allocated 5.0GiB  reserved 9.0GiB  device_used 10.0GiB  eta 47m34s
 
 The bracketed decomposition, `ot`, and `eta` are all optional -- `hf_scale = 0` removes the first,
 batch-1 buckets and `use_ot = false` remove the second, and the first logged step has no ETA yet.
-Under DDP `peak` becomes `8.1/8.1GB`, one figure per rank, because the ranks are not symmetric and
+Under DDP memory becomes `8.1/8.1GiB`, one figure per rank, because the ranks are not symmetric and
 reporting only rank 0 would hide which rank is the batch-size ceiling.
 """
 
@@ -44,7 +44,7 @@ STEP_RE = re.compile(
     rf"(?=[^\r\n]*?\bloss\s+(?P<loss>{NUMBER})(?=\s|$))"
     rf"(?=[^\r\n]*?\blr\s+(?P<lr>{NUMBER}(?:/{NUMBER})*)(?=\s|$))"
     rf"(?=[^\r\n]*?\s(?P<sit>{NUMBER})s/it(?=\s|$))"
-    rf"(?=[^\r\n]*?\bpeak\s+(?P<peak>{NUMBER}(?:/{NUMBER})*)GB(?=\s|$))"
+    rf"(?=[^\r\n]*?\b(?:peak|peak_alloc)\s+(?P<peak>{NUMBER}(?:/{NUMBER})*)(?P<memory_unit>GiB|GB)(?=\s|$))"
     rf"(?:(?=[^\r\n]*?\(mse\s+(?P<mse>{NUMBER})\s+\+\s+hf\s+(?P<hf>{NUMBER})\)))?"
     rf"(?:(?=[^\r\n]*?\bot\s+(?P<ot>{NUMBER})(?=\s|$)))?"
     r"(?:(?=[^\r\n]*?\beta\s+(?P<eta>\S+)))?"
@@ -168,7 +168,7 @@ class LiveMetricsWidget(QtWidgets.QWidget):
         grid.addWidget(self._add_graph("speed", "Step time", "s/it", [
             ("s/it", ACCENT, "solid"),
         ]), 1, 0)
-        grid.addWidget(self._add_graph("mem", "Peak VRAM", "GB", [
+        grid.addWidget(self._add_graph("mem", "Peak allocated VRAM", "GiB", [
             ("rank 0", ACCENT, "solid"),
             ("rank 1", WARN, "solid"),
         ]), 1, 1)
@@ -197,7 +197,7 @@ class LiveMetricsWidget(QtWidgets.QWidget):
             cell("loss", f"{L['loss']:.4f}" if "loss" in L else "-", ACCENT),
             cell("lr", f"{L['lr']:.2e}" if "lr" in L else "-"),
             cell("s/it", f"{L['sit']:.2f}" if "sit" in L else "-"),
-            cell("peak", "/".join(f"{p:.1f}" for p in peak) + " GB" if peak else "-"),
+            cell("peak allocated", "/".join(f"{p:.2f}" for p in peak) + " GiB" if peak else "-"),
             cell("eta", L.get("eta", "-"), SUCCESS),
             cell("elapsed", self.elapsed_text()),
         ]
@@ -205,7 +205,12 @@ class LiveMetricsWidget(QtWidgets.QWidget):
             parts.insert(3, cell("hf", f"{L['hf']:.4f}"))
         if "ot" in L:
             parts.append(cell("ot", f"{L['ot']:.2f}"))
-        self.header.setText("&nbsp;&nbsp;|&nbsp;&nbsp;".join(parts))
+        memory_parts = []
+        for key, label in (("allocated", "allocated"), ("reserved", "reserved"), ("device_used", "device used (all processes)")):
+            if key in L:
+                memory_parts.append(cell(label, "/".join(f"{v:.2f}" for v in L[key]) + " GiB"))
+        self.header.setText("&nbsp;&nbsp;|&nbsp;&nbsp;".join(parts)
+                            + ("<br>" + "&nbsp;&nbsp;|&nbsp;&nbsp;".join(memory_parts) if memory_parts else ""))
 
     # ------------------------------------------------------------------ ingest
 
@@ -233,6 +238,12 @@ class LiveMetricsWidget(QtWidgets.QWidget):
             "sit": float(d["sit"]),
             "peak": [float(p) for p in d["peak"].split("/") if p],
         }
+        if d["memory_unit"] == "GB":
+            rec["peak"] = [p * 1e9 / 2**30 for p in rec["peak"]]
+        for key in ("allocated", "reserved", "device_used"):
+            field = re.search(rf"\b{key}\s+({NUMBER}(?:/{NUMBER})*)GiB", text)
+            if field:
+                rec[key] = [float(v) for v in field[1].split("/")]
         if d["mse"] is not None:
             rec["mse"] = float(d["mse"])
             rec["hf"] = float(d["hf"])

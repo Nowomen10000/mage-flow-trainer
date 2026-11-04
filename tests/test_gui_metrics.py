@@ -38,11 +38,43 @@ def test_snapshot_renders_hidden_metrics_and_flushes_all_pending(tmp_path):
         app.processEvents()
 
 
-@pytest.mark.parametrize('auxiliary', [False, True])
-def test_current_training_log_reaches_graphs(auxiliary, monkeypatch, capsys):
-    from trainer.training.train import Trainer
+def test_memory_units_and_rank_values():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    widget = LiveMetricsWidget()
+    try:
+        widget.parse_and_update('e0 step 1/2 loss 0.5 lr 1e-4 1s/it peak 8.1/8.2GB')
+        assert widget.latest['peak'] == pytest.approx([8.1e9 / 2**30, 8.2e9 / 2**30])
+        widget.parse_and_update('e0 step 2/2 loss 0.5 lr 1e-4 1s/it peak_alloc 9.1/9.2GiB '
+                                'allocated 5.0/5.1GiB reserved 10.0/10.1GiB device_used 11.0/11.1GiB')
+        widget._flush()
+        assert widget.latest['peak'] == [9.1, 9.2]
+        assert widget.latest['allocated'] == [5.0, 5.1]
+        assert widget.latest['reserved'] == [10.0, 10.1]
+        assert widget.latest['device_used'] == [11.0, 11.1]
+        assert 'all processes' in widget.header.text()
+        assert 'GiB' in widget.header.text()
+    finally:
+        widget.deleteLater()
+        app.processEvents()
 
-    monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
+
+@pytest.mark.parametrize('auxiliary', [False, True])
+@pytest.mark.parametrize('cuda', [False, True])
+def test_current_training_log_reaches_graphs(auxiliary, cuda, monkeypatch, capsys):
+    from trainer.training.train import Trainer
+    capsys.readouterr()  # Compiler discovery can print during the first import.
+
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: cuda)
+    if cuda:
+        def sample(value):
+            def read(device):
+                assert device == 'cpu'  # The logger must pass the accelerator's device explicitly.
+                return value
+            return read
+        monkeypatch.setattr(torch.cuda, 'mem_get_info', sample((12 * 2**30, 24 * 2**30)))
+        monkeypatch.setattr(torch.cuda, 'max_memory_allocated', sample(10 * 2**30))
+        monkeypatch.setattr(torch.cuda, 'memory_allocated', sample(6 * 2**30))
+        monkeypatch.setattr(torch.cuda, 'memory_reserved', sample(11 * 2**30))
     train = TrainConfig(log_every=1)
     # Match Modan's HF + paired-texture logging, along with newer diagnostics.
     trainer = SimpleNamespace(
@@ -65,6 +97,10 @@ def test_current_training_log_reaches_graphs(auxiliary, monkeypatch, capsys):
         widget.parse_and_update(line)
         widget._flush()
         assert widget.latest['step'] == 9
+        assert widget.latest['peak'] == ([10.0] if cuda else [0.0])
+        assert widget.latest['allocated'] == ([6.0] if cuda else [0.0])
+        assert widget.latest['reserved'] == ([11.0] if cuda else [0.0])
+        assert widget.latest['device_used'] == ([12.0] if cuda else [0.0])
         assert widget.latest['loss'] == 0.5
         assert widget.latest['lrs'] == [0.0012, 0.0004]
         assert widget.latest['eta'] == '12m30s'

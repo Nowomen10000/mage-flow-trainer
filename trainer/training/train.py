@@ -1107,10 +1107,15 @@ class Trainer:
         # Peak memory must be gathered, not read locally: ranks are NOT symmetric. Rank 0 carries
         # NCCL buffers and does the checkpoint export, so reporting only its number both overstates
         # the typical rank and hides which rank is actually the batch-size ceiling.
-        local_peak = torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0
-        peaks = acc.gather(
-            torch.tensor([local_peak], device=acc.device, dtype=torch.float64)
-        ).tolist()
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info(acc.device)
+            local_memory = [torch.cuda.max_memory_allocated(acc.device),
+                            torch.cuda.memory_allocated(acc.device),
+                            torch.cuda.memory_reserved(acc.device), total - free]
+        else:
+            local_memory = [0, 0, 0, 0]
+        memory = acc.gather(torch.tensor([local_memory], device=acc.device,
+                                         dtype=torch.float64)).tolist()
 
         if not acc.is_main_process or self.progress_mode == "off":
             return
@@ -1124,11 +1129,10 @@ class Trainer:
         lrs = self.scheduler.get_last_lr()
         lr = "/".join(f"{v:.2e}" for v in lrs) if len(set(lrs)) > 1 else f"{lrs[0]:.2e}"
         dt = (time.time() - t0) / max(1, self.cfg.train.log_every)
-        mem = (
-            "/".join(f"{p / 1e9:.1f}" for p in peaks) + "GB"
-            if len(peaks) > 1
-            else f"{peaks[0] / 1e9:.1f}GB"
-        )
+        def memory_field(column):
+            return "/".join(f"{row[column] / 2**30:.2f}" for row in memory) + "GiB"
+        mem = (f"peak_alloc {memory_field(0)}  allocated {memory_field(1)}  "
+               f"reserved {memory_field(2)}  device_used {memory_field(3)}")
         # total = mse + hf, so the two printed numbers add up to the first.
         parts = f"loss {value:.4f}"
         if 'texture' in getattr(self, 'last_stats', {}):
@@ -1161,13 +1165,13 @@ class Trainer:
             # tqdm already draws step/total, percentage, elapsed and its own ETA, so the postfix
             # carries only what it cannot know.
             self.bar.set_description_str(f"e{epoch}")
-            self.bar.set_postfix_str(f"{parts}  lr {lr}  peak {mem}", refresh=True)
+            self.bar.set_postfix_str(f"{parts}  lr {lr}  {mem}", refresh=True)
             return
 
         eta = self._eta()
         print(
             f"e{epoch} step {self.global_step}/{self.total_steps} ({self.progress_pct():.0f}%)  "
-            f"{parts}  lr {lr}  {dt:.2f}s/it  peak {mem}"
+            f"{parts}  lr {lr}  {dt:.2f}s/it  {mem}"
             + (f"  eta {eta}" if eta else ""),
             flush=True,
         )
