@@ -5,7 +5,10 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import warnings
+
+_WINDOWS = os.name == 'nt'
 
 
 def file_sha256(path):
@@ -84,13 +87,44 @@ def validate_dataset_caches(dataset, train, policy='warn'):
         raise ValueError('Dataset mixes latent caches from different VAEs; rebuild with one VAE or explicitly disable cache validation')
 
 
+def _replace_cache(temporary, path):
+    # Windows readers/scanners can briefly deny rename/delete sharing. Never
+    # remove the destination first: a failed replacement must keep the old cache.
+    delays = (0.05, 0.1, 0.2, 0.4, 0.8)
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError as exc:
+            if (not _WINDOWS or getattr(exc, 'winerror', None) not in (None, 5, 32, 33)
+                    or attempt == len(delays)):
+                raise
+            time.sleep(delays[attempt])
+
+
 def atomic_save(tensors, path, metadata):
-    from safetensors.torch import save_file
+    """Publish one latent atomically, keeping the temporary file open while writing."""
+    from safetensors.torch import save
     path = Path(path)
-    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
-    os.close(fd)
+    # A latent is small; serialize it to bytes so we can use mkstemp's existing
+    # handle instead of closing and reopening its path through the Rust writer.
+    payload = save(tensors, metadata=metadata)
+    temporary = None
     try:
-        save_file(tensors, temporary, metadata=metadata)
-        os.replace(temporary, path)
+        fd, temporary = tempfile.mkstemp(prefix='.bluflow-latent-', suffix='.tmp', dir=path.parent)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(payload)
+        _replace_cache(temporary, path)
+    except OSError as exc:
+        raise OSError(exc.errno,
+                      f'Could not write latent cache {path}: {exc}. '
+                      'Check folder permissions, read-only files, and applications locking this path. '
+                      'Completed caches can be reused by rerunning without overwrite.', str(path)) from exc
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                # A cleanup failure must not hide the actual write/rename error.
+                # A leftover .tmp is not a usable cache and will not be loaded.
+                pass
