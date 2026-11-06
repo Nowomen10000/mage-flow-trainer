@@ -1,6 +1,6 @@
 """Optimizer capabilities and upstream defaults, shared by CLI and GUI.
 
-SDNQ 0.2.4 and torch-optimi 0.3.3. Keep this module free of GPU imports.
+SDNQ 0.2.9 and torch-optimi 0.3.3. Keep this module free of GPU imports.
 """
 from dataclasses import dataclass
 

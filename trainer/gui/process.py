@@ -277,7 +277,7 @@ class ProcessRunner(QThread):
 _DEVICE_LIST_RE = re.compile(r"^\d+(,\d+)*$")
 
 
-def training_env(gpus: str = "") -> dict[str, str]:
+def training_env(gpus: str = "", *, windows_allocator: str = "inherit") -> dict[str, str]:
     """Environment for a spawned run: the repo on PYTHONPATH so `-m trainer.…` resolves however the
     GUI itself was started.
 
@@ -287,6 +287,14 @@ def training_env(gpus: str = "") -> dict[str, str]:
     digits-and-commas is rejected loudly instead.
     """
     env = os.environ.copy()
+    if sys.platform == "win32":
+        if windows_allocator not in ("inherit", "native", "cudaMallocAsync"):
+            raise ValueError(f"Unknown Windows CUDA allocator: {windows_allocator!r}")
+        if windows_allocator != "inherit":
+            # Explicit GUI selection overrides even an old launcher's forced async
+            # setting. Change only the child environment, before it imports torch.
+            env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+            env["PYTORCH_ALLOC_CONF"] = f"backend:{windows_allocator}"
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT))
     gpus = (gpus or "").strip()

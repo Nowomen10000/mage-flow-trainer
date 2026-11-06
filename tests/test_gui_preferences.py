@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -30,6 +31,25 @@ def test_defaults_and_no_save_while_editing(gui):
     gui._on_edit()
     assert not list(gui.config_dir.glob("*.toml"))
     assert not gui.preferences.path.exists()
+
+
+def test_windows_allocator_dialog_persists_and_restores(gui, monkeypatch):
+    monkeypatch.setattr(gui_module, "sys", SimpleNamespace(platform="win32"))
+    selections = iter([("inherit", "native"), ("native", "cudaMallocAsync")])
+
+    def choose(dialog):
+        expected, selection = next(selections)
+        combo = dialog.findChild(QtWidgets.QComboBox, "windows_allocator")
+        assert combo.currentData() == expected
+        combo.setCurrentIndex(combo.findData(selection))
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", choose)
+    before = gui.collect()
+    for selection in ("native", "cudaMallocAsync"):
+        gui._preferences_dialog()
+        assert Preferences(gui.preferences.path).values["windows_allocator"] == selection
+        assert gui.collect() == before
 
 
 def test_invalid_preferences_use_defaults(tmp_path):

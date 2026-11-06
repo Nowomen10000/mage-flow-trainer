@@ -19,21 +19,14 @@ from trainer.training.distributed import configure_moss_checkpoint_ddp
     ("moss_image", 2, "default", True, True, False),
     ("flux3", 2, "default", True, False, False),
 ])
-def test_ddp_partition_guard_is_scoped(monkeypatch, family, world, compiled, checkpoint, inside, disabled):
-    monkeypatch.setattr(torch._dynamo.config, "optimize_ddp", True)
+def test_ddp_partition_guard_is_scoped(family, world, compiled, checkpoint, inside, disabled):
     cfg = SimpleNamespace(model_family=family, compile=compiled,
                           gradient_checkpointing=checkpoint, moss_checkpoint_inside_compile=inside)
-    configure_moss_checkpoint_ddp(cfg, world)
-    assert torch._dynamo.config.optimize_ddp is (not disabled)
-
-
-@pytest.fixture(scope="module")
-def ddp_device():
-    rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(rank)
-    dist.init_process_group("nccl")
-    yield torch.device("cuda", rank)
-    dist.destroy_process_group()
+    # Torch config uses dynamic attributes; ordinary monkeypatch restoration can
+    # delete the setting under newer pytest releases and poison later tests.
+    with torch._dynamo.config.patch(optimize_ddp=True):
+        configure_moss_checkpoint_ddp(cfg, world)
+        assert torch._dynamo.config.optimize_ddp is (not disabled)
 
 
 @pytest.mark.skipif(os.environ.get("MAGEFLOW_GPU_TESTS") != "1" or os.environ.get("WORLD_SIZE") != "2",

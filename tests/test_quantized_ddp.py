@@ -2,7 +2,9 @@
 
 import os
 import unittest
+from unittest.mock import patch
 
+import pytest
 import torch
 import torch.distributed as dist
 
@@ -15,6 +17,24 @@ from trainer.training.distributed import (
 
 
 class UpdateRandomnessTests(unittest.TestCase):
+    def test_storage_order_ignores_tensor_flatten_order(self):
+        from sdnq.training import SDNQTensor
+
+        model = torch.nn.Module()
+        model.register_buffer("weight", SDNQTensor.from_float(torch.ones(32, 32)))
+        original = SDNQTensor.__tensor_flatten__
+        expected = list(model_storage(model))
+
+        def reversed_fields(tensor):
+            fields, metadata = original(tensor)
+            return list(reversed(fields)), metadata
+
+        with patch.object(SDNQTensor, "__tensor_flatten__", reversed_fields):
+            actual = list(model_storage(model))
+        self.assertEqual([name for name, _ in expected], [name for name, _ in actual])
+        for (_, before), (_, after) in zip(expected, actual):
+            self.assertIs(before, after)
+
     def test_update_rng_is_shared_without_changing_data_rng(self):
         draws = []
         for rank_seed in (41, 42):
@@ -28,6 +48,7 @@ class UpdateRandomnessTests(unittest.TestCase):
             self.assertFalse(torch.equal(draws[0], torch.rand(32)))
 
 
+@pytest.mark.usefixtures("ddp_device")
 @unittest.skipUnless(
     os.environ.get("MAGEFLOW_GPU_TESTS") == "1" and os.environ.get("WORLD_SIZE") == "2",
     "requires two-rank GPU opt-in",
@@ -40,15 +61,15 @@ class QuantizedDistributedTests(unittest.TestCase):
         rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(rank)
         device = torch.device("cuda", rank)
-        dist.init_process_group("nccl")
         try:
-            for kind in ("adamw8bit", "adafactor"):
+            for kind, kahan in ((kind, kahan) for kind in ("adamw8bit", "adafactor")
+                                for kahan in (False, True)):
                 torch.manual_seed(42)
                 model = torch.nn.Linear(256, 256, bias=False).to(device, torch.bfloat16)
                 ddp = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
                 optimizer = build_optimizer(
                     [{"params": list(model.parameters()), "lr": 2e-4}],
-                    OptimizerConfig(kind=kind, quantize_state=False, use_kahan=False),
+                    OptimizerConfig(kind=kind, quantize_state=False, use_kahan=kahan),
                 )
                 initial = model.weight.detach().clone()
                 torch.manual_seed(100 + rank)
@@ -62,7 +83,7 @@ class QuantizedDistributedTests(unittest.TestCase):
                     self.assertTrue(torch.equal(reference, model.weight), kind)
                 self.assertFalse(torch.equal(initial, model.weight), kind)
         finally:
-            dist.destroy_process_group()
+            torch._dynamo.reset()
 
     def test_compiled_quantized_training_keeps_replicas_identical(self):
         from trainer.training.quant import QuantConfig, quantize_module
@@ -72,7 +93,6 @@ class QuantizedDistributedTests(unittest.TestCase):
         rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(rank)
         device = torch.device("cuda", rank)
-        dist.init_process_group("nccl")
         try:
             torch.manual_seed(100 + rank)
             model = torch.nn.Sequential(
@@ -127,4 +147,4 @@ class QuantizedDistributedTests(unittest.TestCase):
                 check_equal()
             self.assertFalse(torch.equal(first, next(model.parameters()).dequantize()))
         finally:
-            dist.destroy_process_group()
+            torch._dynamo.reset()

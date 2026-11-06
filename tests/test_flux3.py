@@ -83,7 +83,7 @@ def test_flux3_resolver_and_guards(tmp_path):
     c.train.attention_backend = "torch_varlen"
     validate_model_options(c)
     c.flow.dual_timestep = True
-    with pytest.raises(ValueError, match="Experimental Flux3"):
+    with pytest.raises(ValueError, match="Flux3/MOSS supports text-to-image"):
         validate_model_options(c)
 
 

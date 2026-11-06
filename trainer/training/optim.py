@@ -59,6 +59,10 @@ def build_optimizer(groups: list[dict], cfg: OptimizerConfig) -> torch.optim.Opt
     from sdnq.optim import CAME, Adafactor, AdamW, Lion, Muon
     from .sinkgd import SinkGD
 
+    if cfg.use_kahan:
+        from .sdnq_compat import fix_kahan_weight_decay
+        fix_kahan_weight_decay()
+
     factory = {"adamw8bit": AdamW, "adafactor": Adafactor, "came": CAME,
                "lion": Lion, "muon": Muon, "sinkgd": SinkGD}[kind]
 
@@ -84,8 +88,14 @@ def build_optimizer(groups: list[dict], cfg: OptimizerConfig) -> torch.optim.Opt
     # Older SDNQ releases read this stale name only when initializing a quantized
     # Kahan buffer. Supply the alias during step, after constructor validation,
     # and remove it afterward so checkpoints retain SDNQ's canonical schema.
-    optimizer.register_step_pre_hook(_sdnq_kahan_alias)
-    optimizer.register_step_post_hook(_sdnq_remove_kahan_alias)
+    from importlib.metadata import version
+    from packaging.version import Version
+    if Version(version('sdnq')) < Version('0.2.8'):
+        optimizer.register_step_pre_hook(_sdnq_kahan_alias)
+        optimizer.register_step_post_hook(_sdnq_remove_kahan_alias)
+    elif version('sdnq') == '0.2.9':
+        from .sdnq_compat import migrate_optimizer_state
+        optimizer.register_load_state_dict_pre_hook(migrate_optimizer_state)
     return optimizer
 
 

@@ -1,6 +1,6 @@
 """Frozen MOSS INT8 projections with a compile-safe input-gradient path.
 
-SDNQ 0.2.4 supplies quantization and GEMM kernels. Custom operators keep its
+SDNQ supplies quantization and GEMM kernels. Custom operators keep its
 Python/tensor-subclass machinery out of compiled transformer blocks. Only
 adapter parameters are trainable; these operators do not compute base gradients.
 """
@@ -35,9 +35,11 @@ def _is_ada(device):
 
 
 def uses_fixed_ada_tile(device):
-    """Only specialize the hardware measured; honor SDNQ kernel overrides."""
+    """Legacy 0.2.4 workaround; newer releases provide hardware-aware tuning."""
     from sdnq import kernel_wrappers
-    return (kernel_wrappers.use_triton_scaled_mm and _is_ada(device)
+    from sdnq.kernels import triton_scaled_mm as kernel
+    return (hasattr(kernel, 'min_block_size')
+            and kernel_wrappers.use_triton_scaled_mm and _is_ada(device)
             and not any(key.startswith("SDNQ_TRITON_MM_") for key in os.environ))
 
 

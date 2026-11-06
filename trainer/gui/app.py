@@ -632,6 +632,25 @@ class TrainingGUI(QtWidgets.QWidget):
         row.addWidget(make_btn("Browse", browse))
         row.addWidget(make_btn("Use default", folder.clear))
         layout.addLayout(row)
+        allocator = None
+        if sys.platform == "win32":
+            layout.addWidget(QtWidgets.QLabel("CUDA memory allocator:"))
+            allocator = QtWidgets.QComboBox()
+            allocator.setObjectName("windows_allocator")
+            allocator.addItem("Default — respect environment, otherwise native", "inherit")
+            allocator.addItem("Native — compatibility", "native")
+            allocator.addItem("cudaMallocAsync — optional memory savings", "cudaMallocAsync")
+            saved = self.preferences.values.get("windows_allocator", "inherit")
+            allocator.setCurrentIndex(max(0, allocator.findData(saved)))
+            layout.addWidget(allocator)
+            help_text = QtWidgets.QLabel(
+                "Native is the compatibility default. cudaMallocAsync can reduce VRAM use, "
+                "but may crash on some Windows setups; select Native if that happens. "
+                "An explicit selection overrides allocator environment settings. "
+                "Applies to the next training, caching, or calibration process, including queued jobs; "
+                "running jobs are unchanged.")
+            help_text.setWordWrap(True)
+            layout.addWidget(help_text)
         info = QtWidgets.QLabel(f"Remembered for future launches in:\n{self.preferences.path}\nExisting TOMLs are not moved.")
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -641,6 +660,8 @@ class TrainingGUI(QtWidgets.QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted and self._set_config_dir(folder.text().strip()):
+            if allocator is not None:
+                self._save_preference("windows_allocator", allocator.currentData())
             if self._current_path is not None:
                 self._external.append(self._current_path)
             self._load_presets(select=self._current_path, apply=False)
@@ -1047,10 +1068,14 @@ class TrainingGUI(QtWidgets.QWidget):
         self._on_failure = on_failure
         self._running_training = training
         try:
-            env = training_env(self.gpu_arg())
+            env = training_env(self.gpu_arg(), windows_allocator=self.preferences.values.get(
+                "windows_allocator", "inherit"))
         except ValueError as exc:            # unreachable from the checkboxes; a guard, not a path
             self.log(f"CONFIG ERROR: {exc}")
             return
+        if sys.platform == "win32":
+            allocation = env.get("PYTORCH_ALLOC_CONF", env.get("PYTORCH_CUDA_ALLOC_CONF", ""))
+            self.log(f"CUDA allocator settings: {allocation or 'native (default)'}")
         self.runner = ProcessRunner(launch, str(PROJECT_ROOT), env)
         self.runner.logSignal.connect(self.log)
         self.runner.errorSignal.connect(self.log)

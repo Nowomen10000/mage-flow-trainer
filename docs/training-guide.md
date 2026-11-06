@@ -77,12 +77,12 @@ Packed resolution batches use a **fixed image count**, not a token-budget schedu
 - Input/output projections, text input norm and timestep embeddings stay in high precision. `all_adaln` additionally protects both streams' modulation; `first_block_adaln` and `mlp_down` are available alternatives.
 - `use_quantized_matmul="auto"` currently resolves to **off**. Explicit `true` enables SDNQ quantized matmul; its memory, throughput, and numerical effects depend on the workload.
 
-With SDNQ 0.2.4 and PyTorch 2.10.0, the tested INT8/UINT8 dynamic matmul
-full-finetune paths fail during regional model compilation at SDNQ's
-`ctx.use_hadamard` branch. Omit `train.compile` to exercise those paths;
-SDNQ still compiles its internal kernels. Storage-only quantization continues
-to work with model compilation. The installed SDNQ configuration defaults
-`use_grad_ckpt` to `true`, including for these matmul tests.
+Trainable INT8 matmul plus regional model compilation remains unsupported with
+SDNQ 0.2.9 and PyTorch 2.10.0: checkpoint recomputation fails in SDNQTensor handling.
+The earlier 0.2.4 INT8/UINT8 dynamic matmul paths also failed under regional compile.
+Omit `train.compile` when testing trainable quantized matmul; SDNQ still compiles
+its internal kernels. Storage-only finetuning supports model compilation.
+The frozen Balanced/Fast adapter wrappers support compilation and DDP.
 See the [controlled matmul benchmark](quantized-matmul-benchmark.md) for
 measured memory, throughput, and loss differences.
 
@@ -156,6 +156,14 @@ weight_decay = 0.0
 use_kahan = false
 ```
 
+`optimizer.use_kahan=true` compensates parameter-update rounding errors and can
+be used with stochastic rounding. It adds a residual buffer per parameter; it is
+not a guarantee of better visual quality. SDNQ 0.2.9 fixes the older FP32 aliasing
+and quantized-buffer initialization bugs. BluFlow additionally corrects its
+Kahan/weight-decay interaction so decay is not mistakenly compensated away.
+Existing optimizer states are migrated without requantizing their stored values.
+The default remains `false`.
+
 SDNQ Adafactor defaults to `betas = [-0.8, 0.999]`; its first value is a negative
 second-moment decay exponent. SDNQ CAME uses `[0.9, 0.999, 0.9999]`, and Optimi Adan
 uses `[0.98, 0.92, 0.99]`. Explicit AdamW-style positive decay exponents for Adafactor
@@ -169,7 +177,7 @@ buffer; `quantize_state=true` quantizes eligible buffers, but the factored
 variance buffers remain FP32. Startup logs and checkpoint metadata record the
 actual setting. Switching optimizer families resets the toggle to off.
 At beta `0.999`, smoothing starts slowly and is not bias-corrected in SDNQ
-0.2.4, so account for that when interpreting short comparisons. Start tests
+0.2.9, so account for that when interpreting short comparisons. Start tests
 from the original weights with fresh optimizer state; keep normalization and
 LR matched to the corresponding momentum-off baseline.
 

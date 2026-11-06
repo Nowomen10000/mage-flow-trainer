@@ -106,7 +106,7 @@ requires-dist = [
     { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.11.1" },
     { name = "safetensors" },
     { name = "scipy", marker = "extra == 'ot'" },
-    { name = "sdnq", specifier = "==0.2.4" },
+    { name = "sdnq", specifier = "==0.2.9" },
     { name = "sentencepiece" },
     { name = "setuptools" },
     { name = "toml" },
@@ -1125,7 +1125,7 @@ wheels = [
 
 [[package]]
 name = "sdnq"
-version = "0.2.4"
+version = "0.2.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
@@ -1133,9 +1133,9 @@ dependencies = [
     { name = "torch" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/48/16143309fdf3bc6859c9ca93c421b2d3b811ad686bf117e9f941e836f375/sdnq-0.2.4.tar.gz", hash = "sha256:1a2774ef0005ee85bcd751661d9a90e1dac38ff4d5e1fd2015d909fb32e6a70e", size = 89368, upload-time = "2026-08-07T20:36:11.815Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/91/61/be21c5baa22da001342ce8c38e4f5bdfecc59324a1458460bcb3c0cca871/sdnq-0.2.9.tar.gz", hash = "sha256:c7854b91766fd7e048c8e3501c624c40ccdc4437da4a072f7a6929b44add128b", size = 113451, upload-time = "2026-11-03T19:57:59.016Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/46/aef1892e08c2e97f1b73e1eb416036f8870d4cda41a3e489aa18c9e065ad/sdnq-0.2.4-py3-none-any.whl", hash = "sha256:4c5a5505710355bc2484944578638806157ced871d3d127c827b2e0125ee69e1", size = 129421, upload-time = "2026-08-07T20:36:10.459Z" },
+    { url = "https://files.pythonhosted.org/packages/27/98/3cff23544d563b151c20db0d1968916296995f145842ecec8a83cf19206c/sdnq-0.2.9-py3-none-any.whl", hash = "sha256:487b15d85d90fae0b768919f64a76fc4a14d213291e65c4df35dcc542f89157f", size = 151070, upload-time = "2026-11-03T19:57:57.482Z" },
 ]
 
 [[package]]

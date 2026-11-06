@@ -11,8 +11,8 @@ description = "BluFlow-Trainer: MOSS-Image training with SDNQ and multi-model fl
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
-    # Pinned known-good: sdnq 0.2.4 imports cleanly on stable 2.10 (its >=2.12
-    # branch never fires) and this is the torch its Triton path is tested against.
+    # Validated with SDNQ 0.2.9: keep Torch/Triton fixed while upgrading the
+    # quantization backend so kernel and training comparisons remain controlled.
     "torch==2.10.0",
     "torchvision",
     # Triton publishes NO Windows wheels -- 3.6.0 ships manylinux x86_64/aarch64 only, so a plain
@@ -27,7 +27,7 @@ dependencies = [
     # SDNQ's quantizer backend only exists on diffusers main, not in 0.39.0.
     "diffusers",
     # Optimizer defaults and compatibility patches are validated against this release.
-    "sdnq==0.2.4",
+    "sdnq==0.2.9",
     "torch-optimi==0.3.3",
     "transformers>=4.51",  # >=4.51 for Qwen3
     "accelerate",

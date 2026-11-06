@@ -39,7 +39,9 @@ def model_storage(module):
     for name, value in list(module.named_parameters()) + list(module.named_buffers()):
         if isinstance(value, SDNQTensor) or type(value).__module__.startswith("comfy_kitchen.tensor"):
             names, _ = value.__tensor_flatten__()
-            for field in names:
+            # SDNQ 0.2.9 enumerates a set here: Python hash randomization gives
+            # each rank a different order. Collective order must be canonical.
+            for field in sorted(names):
                 yield f"{name}.{field}", getattr(value, field)
         else:
             yield name, value

@@ -8,10 +8,14 @@ def quantizers():
     import sdnq.quantizer as q
     from trainer.training.sdnq_rounding import enable_unbiased_integer_rounding
     original = q.quantize_weight
-    assert enable_unbiased_integer_rounding()
+    patched = enable_unbiased_integer_rounding()
     fixed = q.quantize_weight
-    assert enable_unbiased_integer_rounding()
+    assert enable_unbiased_integer_rounding() is patched
     assert q.quantize_weight is fixed
+    if not patched:
+        # Newer upstream releases implement uniform integer rounding directly.
+        # Exercise the same numerical checks without requiring our old shim.
+        assert fixed is original
     yield original, fixed
     q.quantize_weight = original
 

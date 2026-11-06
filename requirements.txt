@@ -190,7 +190,7 @@ safetensors==0.8.0
     #   transformers
 scipy==1.17.1
     # via bluflow-trainer
-sdnq==0.2.4
+sdnq==0.2.9
     # via bluflow-trainer
 sentencepiece==0.2.2
     # via bluflow-trainer

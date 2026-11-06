@@ -35,8 +35,31 @@ def cache_root():
 
 
 def candidate_tiles():
-    from sdnq.kernels.triton_scaled_mm import matmul_configs
-    return [dict(c.kwargs, num_warps=c.num_warps, num_stages=c.num_stages) for c in matmul_configs]
+    from sdnq.kernels import triton_scaled_mm as kernel
+    configs = getattr(kernel, 'matmul_configs', None)
+    if configs is None:
+        configs = [*kernel.autotune_configs, *kernel.small_autotune_configs]
+    return [dict(c.kwargs, num_warps=c.num_warps, num_stages=c.num_stages) for c in configs]
+
+
+def eligible_tiles(candidates, a, b, sa, sb):
+    """Use upstream's hardware/shape pruning before compiling calibration tiles."""
+    from sdnq.kernels import triton_scaled_mm as kernel
+    if hasattr(kernel, 'min_block_size'):
+        return candidates  # Keep the measured 0.2.4 path unchanged.
+    import torch
+    import triton
+    configs = [triton.Config({k: v for k, v in tile.items() if k not in ('num_warps', 'num_stages')},
+                            num_warps=tile['num_warps'], num_stages=tile['num_stages'])
+               for tile in candidates]
+    # prune_configs only needs C's element size, not an output allocation.
+    args = dict(a_ptr=a, b_ptr=b, c_ptr=torch.empty((), device=a.device, dtype=torch.bfloat16),
+                scale_a_ptr=sa, scale_b_ptr=sb, bias_ptr=None, bias_ndim=0,
+                M=a.shape[0], N=b.shape[1], K=a.shape[1],
+                scale_a_is_tensorwise=sa.numel() == 1, scale_b_is_tensorwise=sb.numel() == 1)
+    pruned = kernel.prune_configs(configs, args)
+    tiles = [dict(c.kwargs, num_warps=c.num_warps, num_stages=c.num_stages) for c in pruned]
+    return [tile for tile in tiles if tile in candidates]
 
 
 def moss_shapes(model_path):
@@ -169,17 +192,28 @@ def launch_scaled_mm(a, b, sa, sb, dtype, tile):
         padded = torch.nn.functional.pad(a, (0, 0, 0, (-a.shape[0]) % 8))
         result = torch._int_mm(padded, b.contiguous())[:a.shape[0]].float()
         return result.mul_(sa.reshape(-1, 1)).mul_(sb.reshape(1, -1)).to(dtype)
-    from sdnq.kernels.triton_scaled_mm import sdnq_scaled_mm_kernel, min_block_size
+    from sdnq.kernels import triton_scaled_mm as kernel
     m, k = a.shape
     n = b.shape[1]
     out = torch.empty((m, n), device=a.device, dtype=dtype)
     grid = (((m + tile['BLOCK_SIZE_M'] - 1) // tile['BLOCK_SIZE_M']) *
             ((n + tile['BLOCK_SIZE_N'] - 1) // tile['BLOCK_SIZE_N']),)
-    sdnq_scaled_mm_kernel.fn[grid](
-        a, b, out, None, sa, sb, m, n, k, int(b.is_contiguous()), 0,
-        (m + min_block_size - 1) // min_block_size,
-        (n + min_block_size - 1) // min_block_size,
-        (k + min_block_size - 1) // min_block_size, str(a.dtype), str(dtype), **tile)
+    if hasattr(kernel, 'min_block_size'):  # SDNQ 0.2.4 ABI
+        block = kernel.min_block_size
+        kernel.sdnq_scaled_mm_kernel.fn[grid](
+            a, b, out, None, sa, sb, m, n, k, int(b.is_contiguous()), 0,
+            (m + block - 1) // block, (n + block - 1) // block,
+            (k + block - 1) // block, str(a.dtype), str(dtype), **tile)
+    else:
+        # New SDNQ kernels also specialize scale layout and descriptor options.
+        # Calibration handles row-wise INT8 only; retain INT32 accumulation and
+        # ordinary loads so this path works on Ampere/Ada as well as newer GPUs.
+        block = kernel.block_size_divisor
+        kernel.sdnq_scaled_mm_kernel.fn[grid](
+            a, b, out, None, sa, sb, m, n, k, 0, int(b.is_contiguous()),
+            int(sa.numel() == 1), int(sb.numel() == 1), 0, 0,
+            str(a.dtype), str(dtype), (m + block - 1) // block,
+            (n + block - 1) // block, (k + block - 1) // block, block, **tile)
     return out
 
 
@@ -252,7 +286,8 @@ def calibrate(device, identity, log=print):
                 oracle = _reference(a, b, sa, sb)
                 winners = []
                 # Probe odd M+1 as well as the representative M. No autotuning calls.
-                for tile in [*identity['candidates'], 'torch']:
+                tiles = eligible_tiles(identity['candidates'], a, b, sa, sb)
+                for tile in [*tiles, 'torch']:
                     if tile == 'torch' and winners:
                         break
                     try:

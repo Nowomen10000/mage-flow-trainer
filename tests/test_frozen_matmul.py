@@ -53,7 +53,10 @@ GPU = pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS')!='1', reason='GPU o
 
 def test_fixed_ada_tile_respects_backend_and_user_overrides(monkeypatch):
     from sdnq import kernel_wrappers
+    from sdnq.kernels import triton_scaled_mm as kernel
     from trainer.training import frozen_matmul as f
+    # Simulate the old ABI irrespective of the installed version.
+    monkeypatch.setattr(kernel, 'min_block_size', 256, raising=False)
     monkeypatch.setattr(f, '_is_ada', lambda device: True)
     monkeypatch.setattr(kernel_wrappers, 'use_triton_scaled_mm', True)
     for key in list(os.environ):
@@ -67,6 +70,9 @@ def test_fixed_ada_tile_respects_backend_and_user_overrides(monkeypatch):
     assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
     monkeypatch.setattr(kernel_wrappers, 'use_triton_scaled_mm', True)
     monkeypatch.setattr(f, '_is_ada', lambda device: False)
+    assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
+    monkeypatch.setattr(f, '_is_ada', lambda device: True)
+    monkeypatch.delattr(kernel, 'min_block_size')
     assert not f.uses_fixed_ada_tile(torch.device('cuda:0'))
 
 
@@ -169,7 +175,7 @@ def test_moss_adapter_checkpointed_training(preset, calibrated, tmp_path, monkey
 @pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS')!='1' or os.environ.get('WORLD_SIZE')!='2',
                     reason='requires two GPU ranks')
 @pytest.mark.parametrize('calibrated', [False, True])
-def test_frozen_matmul_ddp_buffers_and_updates(calibrated, tmp_path, monkeypatch):
+def test_frozen_matmul_ddp_buffers_and_updates(calibrated, tmp_path, monkeypatch, ddp_device):
     import torch.distributed as dist
     from trainer.training.distributed import configure_quantized_ddp, sync_quantized_model, model_storage
 
@@ -183,8 +189,7 @@ def test_frozen_matmul_ddp_buffers_and_updates(calibrated, tmp_path, monkeypatch
             return self.layers[1](self.adapter(x)).float().square().mean()
 
     rank=int(os.environ['LOCAL_RANK']);torch.cuda.set_device(rank)
-    device=torch.device('cuda',rank);torch.set_num_threads(2)
-    dist.init_process_group('nccl')
+    device=ddp_device;torch.set_num_threads(2)
     try:
         if calibrated:
             from trainer.training import int8_calibration as c, frozen_matmul as f
@@ -223,7 +228,7 @@ def test_frozen_matmul_ddp_buffers_and_updates(calibrated, tmp_path, monkeypatch
             del wrapped,m,optimizer
             torch.cuda.empty_cache()
     finally:
-        dist.destroy_process_group()
+        torch._dynamo.reset()
 
 
 def test_encoder_cache_ignores_new_transformer_only_fields():
