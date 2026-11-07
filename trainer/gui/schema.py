@@ -85,7 +85,10 @@ SPEC: dict[str, Spec] = {
     "train.offload_text_encoder": _spec("Offload text encoder", "Move the live encoder to GPU for caption encoding and back to CPU before transformer execution. Trades transfers for lower GPU residency.", lambda: F.BoolEditor("Offload text encoder"), inline_label=True),
     "train.compile_text_encoder": _spec("Compile Loaded Text Encoder", "Compile Qwen3 decoder blocks with dynamic shapes. Independent of transformer compilation and SDNQ. First encoding includes compilation; disable text encoder quantization for BF16.", lambda: F.BoolEditor("Compile Loaded Text Encoder"), inline_label=True),
     "train.text_encoder_embedding_only": _spec("Loaded Text Encoder: embedding-only output", "Skip unused logits and intermediate hidden states. Checks equivalence to the original output on the first batch; disabled for Cached Text Encoder.", lambda: F.BoolEditor("Loaded Text Encoder: embedding-only output"), inline_label=True),
-    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires packed attention, integer batch size, no curriculum or OT. On Windows, MOSS packing requires flash_attn_2 and a compatible Flash Attention wheel.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
+    "resolution_schedule.enabled": _spec("Staged resolutions", "MOSS PEFT LoRA / LyCORIS LoCon with cached latents only. Train each tier for a fixed share of successful updates; no epochs.", lambda: F.BoolEditor("Enable staged resolutions"), inline_label=True),
+    "resolution_schedule.save_stage_end": _spec("Save at stage boundaries", "Write step checkpoints after each completed stage; final stage uses the normal final save.", lambda: F.BoolEditor("Save stage checkpoints"), inline_label=True),
+    "resolution_schedule.stages": _spec("Resolution stages", "Shares must total 100%. Stage tiers must match Dataset resolutions; set per-tier batch sizes in Batching. Packing stays within each stage.", lambda: F.ResolutionStagesEditor()),
+    "train.pack_resolutions": _spec("Pack native resolutions", "Mix differently sized images in one batch without image-token padding. Requires packed attention, integer batch size (or per-tier sizes with staged resolutions), no curriculum or OT. On Windows, MOSS packing requires flash_attn_2 and a compatible Flash Attention wheel.", lambda: F.BoolEditor("Pack native resolutions"), inline_label=True),
     "train.checkpoint_blocks": _spec("Checkpoint blocks", "Zero-based block indices; blank checkpoints all blocks.", lambda: F.IntListEditor("e.g. 0, 2, 4")),
     "train.attention_backend": _spec("Attention backend", "torch_varlen uses PyTorch's built-in packed attention and is disabled on Windows. MOSS can use flash_attn_2 for packed training, including compilation, with a compatible external Flash Attention wheel. Startup checks forward and backward GPU kernels. SDPA remains available without an extra wheel.", lambda: F.ChoiceEditor(["sdpa", "torch_varlen", "flash_attn_2", "flash_attn_3"])),
     "train.max_text_tokens": _spec("Maximum text tokens", "Caption token budget after removing the Qwen3-VL system prefix.", lambda: F.IntEditor(1, 4096)),
@@ -820,6 +823,9 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
         ("Model / Output", [
             "train.model_family", "train.model_path", "train.transformer_path", "train.text_encoder_path",
             "train.vae_path", "train.flux2_vae", "train.tokenizer_path", "train.output_dir", "train.run_name",
+        ]),
+        ("Staged Resolutions", [
+            "resolution_schedule.enabled", "resolution_schedule.stages", "resolution_schedule.save_stage_end",
         ]),
         ("Schedule Length", [
             "train.epochs", "train.max_steps", "train.seed",

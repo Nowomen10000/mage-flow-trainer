@@ -23,7 +23,7 @@ def test_real_loop_weights_images_and_skips_invalid_updates():
     loader = DataLoader(data, batch_size=None, collate_fn=lambda x: {'x': x, 'captions': [''] * len(x)})
     model, opt, sched, loader = acc.prepare(model, opt, sched, loader)
     trainer = Trainer.__new__(Trainer)
-    trainer.cfg = NS(train=NS(epochs=1, gradient_accumulation_steps=2, nonfinite_patience=3,
+    trainer.cfg = NS(resolution_schedule=NS(enabled=False), train=NS(epochs=1, gradient_accumulation_steps=2, nonfinite_patience=3,
         log_every=100, save_every_steps=None, save_every_epochs=None, skip_final_save=True, seed=42),
         optimizer=NS(gradient_release=False, max_grad_norm=0))
     trainer.accelerator = acc

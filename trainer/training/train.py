@@ -11,7 +11,7 @@ import shutil
 import sys
 import time
 from dataclasses import replace
-from itertools import islice
+from itertools import islice, accumulate
 from pathlib import Path
 
 from .timing import TrainingTiming, utc_now
@@ -321,42 +321,58 @@ class Trainer:
 
     def _build_data(self) -> None:
         cfg = self.cfg
-        self.dataset = MageFlowDataset(cfg.dataset, caption_seed=cfg.train.seed)
+        cfg.resolution_schedule.validate(cfg)
+        dataset_cfg = replace(cfg.dataset, tier_collapse='repeat') if cfg.resolution_schedule.enabled else cfg.dataset
+        self.dataset = MageFlowDataset(dataset_cfg, caption_seed=cfg.train.seed)
         from ..data.cache_provenance import validate_dataset_caches
         validate_dataset_caches(self.dataset, cfg.train, cfg.dataset.cache_validation)
         from ..data.packed import NativeResolutionBatchSampler, collate_native
-        sampler_cls = NativeResolutionBatchSampler if cfg.train.pack_resolutions else BucketBatchSampler
-        self.sampler = sampler_cls(
-            self.dataset,
-            batch_size=cfg.train.batch_size,
-            shuffle=True,
-            drop_last=False,
-            seed=cfg.train.seed,
-        )
-        if cfg.curriculum:
-            self.sampler.set_curriculum(cfg.curriculum, cfg.train.epochs, cfg.dataset.texture)
-        self.loader = DataLoader(
-            self.dataset,
-            batch_sampler=self.sampler,
-            collate_fn=collate_native if cfg.train.pack_resolutions else collate,
-            num_workers=cfg.train.num_workers,
-            pin_memory=True,
-            # Workers must be re-forked each epoch: the sampler's epoch is read at __iter__ time,
-            # and a persistent worker would keep serving batches built from a stale epoch.
-            persistent_workers=False,
-        )
+        if cfg.resolution_schedule.enabled:
+            from ..data.staged import StagedBatchSampler
+            self.sampler = StagedBatchSampler(
+                self.dataset, cfg.train.batch_size, cfg.resolution_schedule, cfg.train.max_steps,
+                seed=cfg.train.seed, rank=self.accelerator.process_index,
+                world=self.accelerator.num_processes, accumulation=cfg.train.gradient_accumulation_steps)
+            self.stage_index = -1
+            self.stage_cursor = 0
+            self.stage_images = [0] * len(cfg.resolution_schedule.stages)
+            self.stage_attempts = [0] * len(cfg.resolution_schedule.stages)
+            self.loader = None
+            self.total_steps = cfg.train.max_steps
+            self.steps_per_epoch = self.total_batches = 0
+        else:
+            sampler_cls = NativeResolutionBatchSampler if cfg.train.pack_resolutions else BucketBatchSampler
+            self.sampler = sampler_cls(
+                self.dataset,
+                batch_size=cfg.train.batch_size,
+                shuffle=True,
+                drop_last=False,
+                seed=cfg.train.seed,
+            )
+            if cfg.curriculum:
+                self.sampler.set_curriculum(cfg.curriculum, cfg.train.epochs, cfg.dataset.texture)
+            self.loader = DataLoader(
+                self.dataset,
+                batch_sampler=self.sampler,
+                collate_fn=collate_native if cfg.train.pack_resolutions else collate,
+                num_workers=cfg.train.num_workers,
+                pin_memory=True,
+                # Workers must be re-forked each epoch: the sampler's epoch is read at __iter__ time,
+                # and a persistent worker would keep serving batches built from a stale epoch.
+                persistent_workers=False,
+            )
 
-        # `self.sampler` is unsharded; Accelerate's BatchSamplerShard splits it across ranks and
-        # pads with even_batches, so each rank sees ceil(total / num_processes) batches. The
-        # trailing partial accumulation group still steps (end_of_dataloader sync), hence ceil()
-        # again -- nothing is dropped.
-        total_batches = len(self.sampler)
-        per_rank = math.ceil(total_batches / self.accelerator.num_processes)
-        steps_per_epoch = math.ceil(per_rank / cfg.train.gradient_accumulation_steps)
+            # `self.sampler` is unsharded; Accelerate's BatchSamplerShard splits it across ranks and
+            # pads with even_batches, so each rank sees ceil(total / num_processes) batches. The
+            # trailing partial accumulation group still steps (end_of_dataloader sync), hence ceil()
+            # again -- nothing is dropped.
+            total_batches = len(self.sampler)
+            per_rank = math.ceil(total_batches / self.accelerator.num_processes)
+            steps_per_epoch = math.ceil(per_rank / cfg.train.gradient_accumulation_steps)
 
-        self.total_batches = total_batches
-        self.total_steps = cfg.train.max_steps or steps_per_epoch * cfg.train.epochs
-        self.steps_per_epoch = steps_per_epoch
+            self.total_batches = total_batches
+            self.total_steps = cfg.train.max_steps or steps_per_epoch * cfg.train.epochs
+            self.steps_per_epoch = steps_per_epoch
 
         # Progress display. The bar is main-process-only: under DDP every rank runs this loop, and
         # N ranks writing \r to the same terminal is unreadable.
@@ -565,8 +581,14 @@ class Trainer:
                 self.accelerator.print("Loaded Text Encoder: compiled decoder blocks (dynamic=True); first encoding includes compile time")
             if self.cfg.train.text_encoder_embedding_only:
                 self.accelerator.print("Loaded Text Encoder: embedding-only output; first encoding verifies wrapper equivalence")
-        self.transformer, self.optimizer, self.scheduler, self.loader = self.accelerator.prepare(
-            self.transformer, self.optimizer, self.scheduler, self.loader)
+        if self.cfg.resolution_schedule.enabled:
+            # Staged batches are already sharded and contain complete accumulation
+            # groups. Accelerate must not shard or pad them a second time.
+            self.transformer, self.optimizer, self.scheduler = self.accelerator.prepare(
+                self.transformer, self.optimizer, self.scheduler)
+        else:
+            self.transformer, self.optimizer, self.scheduler, self.loader = self.accelerator.prepare(
+                self.transformer, self.optimizer, self.scheduler, self.loader)
         if self.cfg.optimizer.gradient_release:
             from .optim import enable_gradient_release
             self._gradient_release_holder = enable_gradient_release(
@@ -927,6 +949,48 @@ class Trainer:
 
     # ---------------------------------------------------------------- run
 
+    def _training_passes(self):
+        """Yield complete update groups. Dataset cycles never control staged duration."""
+        cfg = self.cfg
+        if not cfg.resolution_schedule.enabled:
+            for epoch in range(self.start_epoch, cfg.train.epochs):
+                if self.global_step >= self.total_steps:
+                    break
+                self.sampler.set_epoch(epoch)
+                loader = self.loader
+                if epoch == self.start_epoch and self.resume_skip_batches:
+                    loader = self.accelerator.skip_first_batches(loader, self.resume_skip_batches)
+                yield epoch, loader
+            return
+        from ..data.packed import collate_native
+        ends = list(accumulate(self.sampler.budgets))
+        while self.global_step < self.total_steps:
+            stage = next(i for i, end in enumerate(ends) if self.global_step < end)
+            if stage != self.stage_index:
+                self.stage_index, self.stage_cursor = stage, 0
+                resolution = cfg.resolution_schedule.stages[stage].resolution
+                effective = cfg.train.batch_size[resolution] * self.accelerator.num_processes * cfg.train.gradient_accumulation_steps
+                if self.accelerator.is_main_process:
+                    _emit(self, f'stage    {stage + 1}/{len(ends)}: {resolution}px, '
+                               f'{self.sampler.budgets[stage]} successful updates, effective batch {effective}')
+            self.sampler.configure(stage, self.stage_cursor, ends[stage] - self.global_step)
+            # A private worker RNG prevents loader construction from advancing model
+            # RNG on transitions or resume. Captions are seeded per sample/cycle.
+            generator = torch.Generator().manual_seed(cfg.train.seed + stage)
+            loader = DataLoader(self.dataset, batch_sampler=self.sampler, collate_fn=collate_native,
+                                num_workers=cfg.train.num_workers, pin_memory=True, generator=generator,
+                                multiprocessing_context="spawn" if cfg.train.num_workers else None)
+            self.loader = loader
+            yield stage, loader
+            # If nonfinite attempts were skipped, refill only this stage's remaining
+            # successful-update budget, continuing after the consumed data cursor.
+
+    def _resolution_state(self):
+        if not self.cfg.resolution_schedule.enabled:
+            return None
+        return dict(identity=self.sampler.identity, stage=self.stage_index, cursor=self.stage_cursor,
+                    images=self.stage_images, attempts=self.stage_attempts)
+
     def train(self) -> None:
         cfg = self.cfg
         acc = self.accelerator
@@ -953,17 +1017,13 @@ class Trainer:
                 dynamic_ncols=True, smoothing=0.05,
             )
 
-        for epoch in range(self.start_epoch, cfg.train.epochs):
-            if self.global_step >= self.total_steps:
-                break
-            self.sampler.set_epoch(epoch)
+        for epoch, loader in self._training_passes():
             self.transformer.train()
-
             t0 = time.time()
-            loader = self.loader
-            if epoch == self.start_epoch and self.resume_skip_batches:
-                loader = acc.skip_first_batches(loader, self.resume_skip_batches)
             for batch in loader:
+                if cfg.resolution_schedule.enabled:
+                    self.stage_cursor += 1
+                    self.stage_images[self.stage_index] += len(batch['captions']) * acc.num_processes
                 # Resolved before the step so the phase's t_range reaches `_step`. Progress is a
                 # pure function of the step count, so every DDP rank picks the same phase without
                 # communicating, and a resumed run lands in the right phase on its own.
@@ -1045,6 +1105,10 @@ class Trainer:
                 if self.consecutive_nonfinite >= cfg.train.nonfinite_patience:
                     raise FloatingPointError("Repeated nonfinite updates; stopped before saving invalid training")
 
+                if cfg.resolution_schedule.enabled:
+                    self.stage_attempts[self.stage_index] += 1
+                    if not update_ok:
+                        continue
                 self.global_step += 1
                 if self.bar is not None:
                     self.bar.update(1)
@@ -1054,14 +1118,17 @@ class Trainer:
                     self._log(loss, hf, epoch, t0)
                     t0 = time.time()
 
-                if cfg.train.save_every_steps and self.global_step % cfg.train.save_every_steps == 0:
+                periodic = cfg.train.save_every_steps and self.global_step % cfg.train.save_every_steps == 0
+                stage_end = (cfg.resolution_schedule.enabled and cfg.resolution_schedule.save_stage_end
+                             and self.global_step == sum(self.sampler.budgets[:self.stage_index + 1]))
+                if periodic or (stage_end and self.global_step < self.total_steps):
                     self.save(f"step{self.global_step:06d}")
 
                 if self.global_step >= self.total_steps:
                     done = True
                     break
 
-            if cfg.train.save_every_epochs and (epoch + 1) % cfg.train.save_every_epochs == 0:
+            if not cfg.resolution_schedule.enabled and cfg.train.save_every_epochs and (epoch + 1) % cfg.train.save_every_epochs == 0:
                 self.save(f"epoch{epoch + 1:03d}")
             if done:
                 break
@@ -1169,17 +1236,27 @@ class Trainer:
         if self.bar is not None:
             # tqdm already draws step/total, percentage, elapsed and its own ETA, so the postfix
             # carries only what it cannot know.
-            self.bar.set_description_str(f"e{epoch}")
+            self.bar.set_description_str(f"stage{epoch + 1}" if self.cfg.resolution_schedule.enabled else f"e{epoch}")
             self.bar.set_postfix_str(f"{parts}  lr {lr}  {mem}", refresh=True)
             return
 
         eta = self._eta()
         print(
-            f"e{epoch} step {self.global_step}/{self.total_steps} ({self.progress_pct():.0f}%)  "
+            f"{'stage' + str(epoch + 1) if self.cfg.resolution_schedule.enabled else 'e' + str(epoch)} step {self.global_step}/{self.total_steps} ({self.progress_pct():.0f}%)  "
             f"{parts}  lr {lr}  {dt:.2f}s/it  {mem}"
             + (f"  eta {eta}" if eta else ""),
             flush=True,
         )
+
+        if self.cfg.resolution_schedule.enabled:
+            stage = self.stage_index
+            info = dict(stage=stage + 1, resolution=self.cfg.resolution_schedule.stages[stage].resolution,
+                        completed=self.global_step - sum(self.sampler.budgets[:stage]),
+                        total=self.sampler.budgets[stage], images=self.stage_images[stage],
+                        attempts=self.stage_attempts[stage],
+                        effective_batch=self.cfg.train.batch_size[self.cfg.resolution_schedule.stages[stage].resolution]
+                        * acc.num_processes * self.cfg.train.gradient_accumulation_steps)
+            _emit(self, 'BLUFLOW_STAGE ' + json.dumps(info))
 
     # ---------------------------------------------------------------- progress
 
@@ -1217,19 +1294,24 @@ class Trainer:
             # Worth printing even though it is configured: a subset's share of the epoch is
             # `entries x num_repeats`, not its file count, and that is the number that decides how
             # hard a regularization set actually pulls.
-            total = max(1, len(self.dataset))
+            sample_total = max(1, len(self.dataset))
             for sub, n in subsets:
                 flag = "" if sub.texture else "  [fullres only -- keeps its captions]"
-                print(f"         {Path(sub.path).name:<24} {n:>6} entries  {100 * n / total:4.1f}% "
-                      f"of the epoch  x{sub.num_repeats}{flag}")
+                print(f"         {Path(sub.path).name:<24} {n:>6} entries  {100 * n / sample_total:4.1f}% "
+                      f"of the {'dataset' if cfg.resolution_schedule.enabled else 'epoch'}  x{sub.num_repeats}{flag}")
         if self.dataset.tier_report is not None:
             summary = self.dataset.tier_report.summary()
             if summary:
                 print(summary)
-        print(f"steps    {self.total_steps} total, {self.steps_per_epoch}/epoch, "
-              f"{self.accelerator.num_processes} process(es)")
+        if cfg.resolution_schedule.enabled:
+            print(f"steps    {self.total_steps} successful updates, {self.accelerator.num_processes} process(es)")
+            for i, (stage, budget) in enumerate(zip(cfg.resolution_schedule.stages, self.sampler.budgets)):
+                print(f"         stage {i + 1}: {stage.resolution}px, {budget} updates, batch/GPU {cfg.train.batch_size[stage.resolution]}")
+        else:
+            print(f"steps    {self.total_steps} total, {self.steps_per_epoch}/epoch, "
+                  f"{self.accelerator.num_processes} process(es)")
         n_proc = self.accelerator.num_processes
-        if n_proc > 1:
+        if n_proc > 1 and not cfg.resolution_schedule.enabled:
             # The trap this exists for: the same config on N GPUs takes N times FEWER optimizer
             # steps, because each rank consumes whole batches. The number is right there in the
             # line above and still reads as "it is running", so it is spelled out.
@@ -1406,6 +1488,8 @@ class Trainer:
         runtime = optimizer_snapshot(self.optimizer)
         timing = self.timing.snapshot()
         runtime.update(timing)
+        if cfg.resolution_schedule.enabled:
+            runtime['resolution_schedule_state'] = self._resolution_state()
         runtime.update(
             save_tag=tag,
             successful_updates=self.successful_updates, skipped_updates=self.skipped_updates,
@@ -1434,7 +1518,8 @@ class Trainer:
                             "source_checkpoint": self.source_checkpoint,
                             "adapter_initialization": getattr(self, "adapter_initialization", None),
                             "training_timing": timing,
-                            "flow_rng_version": self.flow_rng.version}, indent=2)
+                            "flow_rng_version": self.flow_rng.version,
+                            "resolution_schedule_state": self._resolution_state()}, indent=2)
             )
         _emit(self, f"saved {written} ({n} tensors)")
         if tag == "final":
@@ -1553,6 +1638,14 @@ class Trainer:
                 f"save_full_state disabled, so it can be used for inference but not resumed."
             )
         saved_state = json.loads(state_file.read_text())
+        staged = saved_state.get('resolution_schedule_state')
+        if bool(staged) != self.cfg.resolution_schedule.enabled:
+            raise ValueError('Full-state resume must preserve staged-resolution mode; use weights-only to start a new plan')
+        if staged:
+            if staged['identity'] != self.sampler.identity:
+                raise ValueError('Staged resume plan/data/batch size/GPU count changed; use weights-only for a new plan')
+            self.stage_index, self.stage_cursor = staged['stage'], staged['cursor']
+            self.stage_images, self.stage_attempts = staged['images'], staged['attempts']
         self.timing.resume(saved_state.get("training_timing"))
         self.adapter_initialization = saved_state.get("adapter_initialization")
         self.flow_rng.load(acc_dir, required='flow_rng_version' in saved_state)
@@ -1571,6 +1664,11 @@ class Trainer:
             self.source_checkpoint = dict(self.source_checkpoint,
                 role='initialization_before_legacy_resume',
                 original_training_source_verified=False, resume_from=str(p.resolve()))
+        if self.cfg.resolution_schedule.enabled:
+            self.start_epoch = self.resume_skip_batches = 0
+            self._micro = self.global_step * self.cfg.train.gradient_accumulation_steps
+            self.accelerator.print(f'resumed at successful update {self.global_step}; staged data cursor {self.stage_cursor}')
+            return
         self.start_epoch = self.global_step // max(1, self.steps_per_epoch)
         self.resume_skip_batches = ((self.global_step % max(1, self.steps_per_epoch))
                                     * self.cfg.train.gradient_accumulation_steps)
@@ -1582,22 +1680,29 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Train Mage-Flow")
     ap.add_argument("config", help="path to a TOML config")
     ap.add_argument("--dry-run", action="store_true",
-                    help="build everything and run one step, then exit")
+                    help="build and run one step (one per resolution stage in staged mode), then exit without saving")
     ap.add_argument("--max-steps", type=int, default=None, help="override train.max_steps")
     ap.add_argument("--no-save", action="store_true", help="benchmark without writing checkpoints")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    if args.max_steps:
+    if args.max_steps is not None:
         cfg.train.max_steps = args.max_steps
     if args.dry_run:
-        cfg.train.max_steps = 1
-        cfg.train.epochs = 1
+        if cfg.resolution_schedule.enabled:
+            count = len(cfg.resolution_schedule.stages)
+            cfg.train.max_steps = count
+            cfg.resolution_schedule.stages = [replace(s, share=1 / count) for s in cfg.resolution_schedule.stages]
+        else:
+            cfg.train.max_steps = 1
+            cfg.train.epochs = 1
     if args.dry_run or args.no_save:
+        cfg.resolution_schedule.save_stage_end = False
         cfg.train.save_every_epochs = None
         cfg.train.save_every_steps = None
         cfg.train.skip_final_save = True
 
+    cfg.resolution_schedule.validate(cfg)
     Trainer(cfg, config_path=args.config).train()
 
 

@@ -16,6 +16,7 @@ reporting only rank 0 would hide which rank is the batch-size ceiling.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections import deque
@@ -39,7 +40,7 @@ from .widgets import (
 # between them without making the entire step disappear from the graphs.
 NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 STEP_RE = re.compile(
-    r"^e(?P<epoch>\d+)\s+step\s+(?P<step>\d+)/(?P<total>\d+)"
+    r"^(?P<unit>e|stage)(?P<epoch>\d+)\s+step\s+(?P<step>\d+)/(?P<total>\d+)"
     r"(?:\s+\((?P<pct>\d+)%\))?"
     rf"(?=[^\r\n]*?\bloss\s+(?P<loss>{NUMBER})(?=\s|$))"
     rf"(?=[^\r\n]*?\blr\s+(?P<lr>{NUMBER}(?:/{NUMBER})*)(?=\s|$))"
@@ -52,7 +53,7 @@ STEP_RE = re.compile(
 )
 
 # Startup summary lines worth surfacing on the metrics tab rather than leaving in the console.
-REPORT_RE = re.compile(r"^(dataset|steps|mode|params|quant|flow|sched|compile|optim|hf loss)\s{2,}")
+REPORT_RE = re.compile(r"^(dataset|steps|stage|mode|params|quant|flow|sched|compile|optim|hf loss)\s{2,}")
 
 
 class LiveMetricsWidget(QtWidgets.QWidget):
@@ -193,13 +194,18 @@ class LiveMetricsWidget(QtWidgets.QWidget):
         peak = L.get("peak")
         parts = [
             cell("step", f"{L.get('step', '-')}/{L.get('total', '-')}"),
-            cell("epoch", L.get("epoch", "-")),
+            cell("stage" if "stage" in L else "epoch", L.get("stage", L.get("epoch", "-"))),
             cell("loss", f"{L['loss']:.4f}" if "loss" in L else "-", ACCENT),
             cell("lr", f"{L['lr']:.2e}" if "lr" in L else "-"),
             cell("s/it", f"{L['sit']:.2f}" if "sit" in L else "-"),
             cell("peak allocated", "/".join(f"{p:.2f}" for p in peak) + " GiB" if peak else "-"),
             cell("eta", L.get("eta", "-"), SUCCESS),
             cell("elapsed", self.elapsed_text()),
+            *([cell("tier", f"{L['resolution_stage']['resolution']}px"),
+               cell("stage updates", f"{L['resolution_stage']['completed']}/{L['resolution_stage']['total']}"),
+               cell("images seen", L['resolution_stage']['images']),
+               cell("effective batch", L['resolution_stage']['effective_batch'])]
+              if 'resolution_stage' in L else []),
         ]
         if "hf" in L:
             parts.insert(3, cell("hf", f"{L['hf']:.4f}"))
@@ -217,6 +223,14 @@ class LiveMetricsWidget(QtWidgets.QWidget):
     def parse_and_update(self, text):
         if self.pause_btn.isChecked():
             return
+        if text.startswith('BLUFLOW_STAGE '):
+            try:
+                stage = json.loads(text.removeprefix('BLUFLOW_STAGE '))
+                self.latest['resolution_stage'] = stage
+                self._set_header()
+            except (ValueError, KeyError, TypeError):
+                pass
+            return
         if REPORT_RE.match(text):
             self.report_lines.append(text)
             self.report_box.setPlainText("\n".join(self.report_lines[-12:]))
@@ -227,7 +241,7 @@ class LiveMetricsWidget(QtWidgets.QWidget):
         d = m.groupdict()
         step = int(d["step"])
         rec = {
-            "epoch": int(d["epoch"]),
+            ("stage" if d["unit"] == "stage" else "epoch"): int(d["epoch"]),
             "step": step,
             "total": int(d["total"]),
             "loss": float(d["loss"]),

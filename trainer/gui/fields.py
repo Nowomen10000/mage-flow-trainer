@@ -933,3 +933,79 @@ class SubsetEditor(_Blockable):
             self.table.insertRow(i)
             self._make_row(sub.get("path", ""), sub.get("num_repeats", 1),
                            sub.get("texture", True), i)
+
+
+class ResolutionStagesEditor(_Blockable):
+    """Stage shares plus a read-only preview of batches and resolved update counts."""
+    def __init__(self):
+        box = QtWidgets.QWidget()
+        super().__init__(box)
+        layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(['Resolution', 'Share %', 'Batch/GPU', 'Updates', 'Effective batch'])
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        buttons = QtWidgets.QHBoxLayout()
+        for label, callback in [('Add stage', self._add), ('Remove selected', self._remove)]:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.summary = QtWidgets.QLabel('Set total steps and per-tier batch sizes to preview.')
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+
+    def _add(self, *_):
+        self.set(self.get() + [dict(resolution=1024, share=0.2)])
+        self._emit()
+
+    def _remove(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+            self._emit()
+
+    def _set(self, value):
+        self.table.setRowCount(0)
+        for stage in value or []:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            resolution = NoScrollSpinBox()
+            resolution.setRange(64, 8192)
+            resolution.setSingleStep(64)
+            resolution.setValue(stage['resolution'])
+            share = NoScrollDoubleSpinBox()
+            share.setRange(0, 100)
+            share.setDecimals(4)
+            share.setValue(stage['share'] * 100)
+            for col, widget in enumerate((resolution, share)):
+                self.table.setCellWidget(row, col, widget)
+                widget.valueChanged.connect(self._emit)
+
+    def get(self):
+        return [dict(resolution=self.table.cellWidget(r, 0).value(),
+                     share=self.table.cellWidget(r, 1).value() / 100)
+                for r in range(self.table.rowCount())]
+
+    def preview(self, total, batches, world, accumulation):
+        from ..training.resolution_schedule import ResolutionSchedule
+        try:
+            stages = self.get()
+            budgets = ResolutionSchedule(enabled=True, stages=stages).budgets(total)
+            if not isinstance(batches, dict):
+                raise ValueError('Use a per-tier batch size map in Batching')
+            for row, (stage, budget) in enumerate(zip(stages, budgets)):
+                batch = batches.get(stage['resolution'])
+                if batch is None:
+                    raise ValueError('Every stage needs a batch size in Batching')
+                for col, value in enumerate((batch, budget, batch * world * accumulation), 2):
+                    item = QtWidgets.QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+                    self.table.setItem(row, col, item)
+            self.summary.setText(f'{total} successful updates; skipped attempts do not consume the budget. Epoch settings are unavailable.')
+        except (ValueError, TypeError) as exc:
+            for row in range(self.table.rowCount()):
+                for col in range(2, 5):
+                    self.table.setItem(row, col, QtWidgets.QTableWidgetItem('—'))
+            self.summary.setText(str(exc))

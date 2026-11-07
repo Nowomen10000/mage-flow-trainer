@@ -23,6 +23,7 @@ from pathlib import Path
 
 import toml
 
+from ..training.resolution_schedule import ResolutionSchedule
 from ..training.optimizer_specs import OPTIMIZERS, optimizer_defaults
 
 from ..data.caption import CaptionConfig
@@ -48,6 +49,7 @@ from ..training.config import (
 # TOML section -> dataclass. `dataset.caption` is nested one level deeper in the file than it is in
 # the dataclass tree, which is the one place the two shapes disagree.
 SECTIONS: dict[str, type] = {
+    "resolution_schedule": ResolutionSchedule,
     "train": TrainConfig,
     "dataset": DatasetConfig,
     "dataset.caption": CaptionConfig,
@@ -195,6 +197,9 @@ def prune_defaults(flat: dict) -> dict:
         out.pop("dataset.path", None)
     else:
         out.pop("dataset.subsets", None)
+    if flat.get('resolution_schedule.enabled'):
+        out.pop('train.epochs', None)
+        out.pop('train.save_every_epochs', None)
     return out
 
 
@@ -272,6 +277,8 @@ def summarize(flat: dict) -> str:
     quant = flat.get("quant.mode", "none")
     bits = [mode, f"{'/'.join(str(t) for t in tiers)}px"]
 
+    if flat.get('resolution_schedule.enabled'):
+        bits.append(f"{flat.get('train.max_steps')} successful updates / staged resolutions")
     # Whether a run crops is decided by the curriculum, which lives in a table on another tab --
     # so without this the status bar reads identically for a plain LoRA and a texture run.
     phases = flat.get("curriculum") or []

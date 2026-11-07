@@ -79,7 +79,7 @@ def test_current_training_log_reaches_graphs(auxiliary, cuda, monkeypatch, capsy
     # Match Modan's HF + paired-texture logging, along with newer diagnostics.
     trainer = SimpleNamespace(
         accelerator=SimpleNamespace(gather=lambda x: x, device='cpu', is_main_process=True),
-        cfg=SimpleNamespace(train=train, optimizer=SimpleNamespace(max_grad_norm=1.0)),
+        cfg=SimpleNamespace(resolution_schedule=SimpleNamespace(enabled=False), train=train, optimizer=SimpleNamespace(max_grad_norm=1.0)),
         scheduler=SimpleNamespace(get_last_lr=lambda: [0.0012, 0.0004]),
         progress_mode='plain', bar=None, global_step=9, total_steps=450,
         last_grad_norm=torch.tensor(0.05),

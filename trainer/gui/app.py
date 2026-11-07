@@ -110,6 +110,11 @@ _RULES = {
 
     "quant.matmul_tuning": lambda c: (c.get("quant.preset") in ("balanced", "fast") or (
         c.get("quant.backend") == "sdnq" and c.get("quant.mode") == "frozen" and c.get("quant.use_quantized_matmul") is True)),
+    "train.epochs": lambda c: not c.get("resolution_schedule.enabled"),
+    "train.save_every_epochs": lambda c: not c.get("resolution_schedule.enabled"),
+    "dataset.tier_collapse": lambda c: bool(c.get("dataset.resolutions")) and not c.get("resolution_schedule.enabled"),
+    "resolution_schedule.stages": lambda c: bool(c.get("resolution_schedule.enabled")),
+    "resolution_schedule.save_stage_end": lambda c: bool(c.get("resolution_schedule.enabled")),
     "train.resume_mode": lambda c: bool(c.get("train.resume_from")),
     "train.moss_qkv_format": lambda c: (c.get("train.model_family") in ("auto", "moss_image")
         and (c.get("adapter.kind") in ("none", "lora") or (c.get("adapter.kind") == "lycoris_lora" and c.get("adapter.lycoris_algo") == "locon"))),
@@ -117,7 +122,6 @@ _RULES = {
     "train.activation_offload_pin_memory": lambda c: bool(c.get("train.activation_offload")),
     "train.activation_offload_prefetch": lambda c: bool(c.get("train.activation_offload")) and bool(c.get("train.activation_offload_pin_memory")),
     "dataset.resolution": lambda c: not c.get("dataset.resolutions"),
-    "dataset.tier_collapse": lambda c: bool(c.get("dataset.resolutions")),
     "dataset.min_source_area": lambda c: bool(c.get("dataset.resolutions")),
     # Inert on the no_upscale path -- verified, 256/128/64 give identical buckets.
     "dataset.min_bucket_reso": lambda c: not c.get("dataset.bucket_no_upscale", True),
@@ -744,6 +748,7 @@ class TrainingGUI(QtWidgets.QWidget):
                 editor.set(flat.get(key))
         finally:
             self._applying = False
+        self._last_resolution_enabled = bool(flat.get('resolution_schedule.enabled'))
         self._last_optimizer_kind = flat.get("optimizer.kind")
         self._last_adapter_selection = (flat.get("adapter.kind"), flat.get("adapter.lycoris_algo"))
         self._lock_quant_preset()
@@ -897,6 +902,28 @@ class TrainingGUI(QtWidgets.QWidget):
 
     def _on_edit(self):
         if not self._applying:
+            enabled = self.editors['resolution_schedule.enabled'].get()
+            if enabled and not getattr(self, '_last_resolution_enabled', False):
+                self._applying = True
+                try:
+                    tiers = self.editors['dataset.resolutions'].get() or [512, 768, 1024]
+                    if not self.editors['resolution_schedule.stages'].get():
+                        shares = [.2, .2, .6] if len(tiers) == 3 else [round(100 / len(tiers), 4) / 100] * len(tiers)
+                        shares[-1] = 1 - sum(shares[:-1])
+                        self.editors['resolution_schedule.stages'].set([
+                            dict(resolution=t, share=w) for t, w in zip(tiers, shares)])
+                    self.editors['dataset.resolutions'].set(tiers)
+                    batch = self.editors['train.batch_size'].get()
+                    if not isinstance(batch, dict):
+                        self.editors['train.batch_size'].set({t: batch for t in tiers})
+                    self.editors['train.pack_resolutions'].set(True)
+                    if self.editors['train.attention_backend'].get() == 'sdpa':
+                        self.editors['train.attention_backend'].set('flash_attn_2' if sys.platform == 'win32' else 'torch_varlen')
+                    if not self.editors['train.max_steps'].get():
+                        self.editors['train.max_steps'].set(560)
+                finally:
+                    self._applying = False
+            self._last_resolution_enabled = enabled
             self._lock_quant_preset()
             self._lock_moss_sampling()
             kind = self.editors["optimizer.kind"].get()
@@ -928,6 +955,13 @@ class TrainingGUI(QtWidgets.QWidget):
 
     def _refresh(self):
         flat = self.collect()
+        staged = bool(flat.get('resolution_schedule.enabled'))
+        for key in ('train.epochs', 'train.save_every_epochs'):
+            for widget in self.rows.get(key, ()):
+                widget.setVisible(not staged)
+        self.editors['resolution_schedule.stages'].preview(
+            flat.get('train.max_steps'), flat.get('train.batch_size'), self.num_processes(),
+            flat.get('train.gradient_accumulation_steps', 1))
         windows = sys.platform == "win32"
         attention = self.editors["train.attention_backend"]
         item = attention.widget.model().item(attention.values.index("torch_varlen"))

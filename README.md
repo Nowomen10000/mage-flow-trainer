@@ -513,6 +513,56 @@ with `torch_varlen`; set it to false for the per-tier example above. Packing,
 batch size, and accumulation affect optimizer updates per epoch—compare runs by
 updates and samples seen as well as epochs.
 
+### Staged resolution LoRA training (experimental)
+
+[Staged MOSS preset](configs/moss-image-lora-staged.toml) trains one resolution tier
+at a time, with its own per-GPU batch size. It supports PEFT LoRA and LyCORIS
+LoCon, cached latents, and packed varlen attention. This mode uses **successful
+optimizer updates**, never epochs: `train.max_steps` is required; `epochs` and
+`save_every_epochs` are rejected. Existing non-staged runs are unchanged.
+
+```toml
+[resolution_schedule]
+enabled = true
+save_stage_end = true
+stages = [
+  {resolution = 512, share = 0.20},
+  {resolution = 768, share = 0.20},
+  {resolution = 1024, share = 0.60},
+]
+```
+
+With `max_steps = 560`, `dataset.resolutions = [512, 768, 1024]`, and
+`batch_size = {512 = 24, 768 = 12, 1024 = 7}`, this allocates 112/112/336
+updates. Shares sum to one; rounding preserves the total and rejects empty
+stages. The GUI's **Staged Resolutions** table previews the exact budgets and
+effective batch sizes. Configure batches under **Batching** and matching tiers
+under **Dataset**. Windows requires a compatible `flash_attn_2` installation.
+
+Packing combines aspect ratios only within the active tier. Shuffled sample
+streams wrap to fill complete batches; repeats and subsets retain their dataset
+weights. Small sources remain eligible at later tiers without forced upscaling,
+reusing identical latent files. Cache all tiers before starting. Shares divide
+updates, not wall-clock time or image exposure.
+
+The optimizer and LR schedule continue across stages, with one warmup. New
+shapes can compile at transitions. Skipped nonfinite attempts do not advance the
+stage or scheduler; repeated nonfinite updates still stop training. Metrics show
+stage progress, images consumed (including skipped attempts), and effective batch.
+Optional stage saves use normal step checkpoint filenames; the final stage uses
+the normal final save. `save_every_steps` also works.
+
+Launch the preset through the GUI or `python -m trainer.training.train
+configs/moss-image-lora-staged.toml`. `--dry-run` performs one successful update
+per stage without saving; `--no-save` disables periodic, stage-boundary, and final
+checkpoints.
+
+Full-state resume requires the same stage plan, data manifest, batch sizes,
+accumulation, and GPU count; enable optimizer-state saving for this. Weights-only
+continuation starts a fresh plan and schedule. Texture/timestep curricula, OT,
+Self-Flow, gradient release, preservation, and decoded perceptual/adversarial
+experiments cannot be combined with staged resolutions in this first version.
+
 ## Timestep sampling and detail losses
 
 **Method → Flow Matching** shows a live timestep probability plot. Adjust the

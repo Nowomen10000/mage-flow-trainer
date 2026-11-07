@@ -1,0 +1,55 @@
+# Step-driven MOSS LoRA. Cache every tier before starting.
+# Batch sizes are per GPU; reduce them to fit your VRAM.
+[dataset]
+path = "/path/to/moss-dataset"
+source = "latents"
+resolutions = [512, 768, 1024]
+max_bucket_reso = 4096
+
+[train]
+model_family = "moss_image"
+model_path = "moss-image"
+run_name = "moss-image-lora-staged"
+output_dir = "output"
+max_steps = 560
+batch_size = {512 = 24, 768 = 12, 1024 = 7}
+pack_resolutions = true
+attention_backend = "torch_varlen"
+cache_text_embeddings = true
+caption_variations = 1
+text_cache_batch_size = 1
+gradient_checkpointing = true
+compile = "default"
+
+[resolution_schedule]
+enabled = true
+save_stage_end = true
+stages = [
+  {resolution = 512, share = 0.20},
+  {resolution = 768, share = 0.20},
+  {resolution = 1024, share = 0.60},
+]
+
+[adapter]
+kind = "lora" # Or "lycoris_lora" with lycoris_algo="locon".
+rank = 16
+alpha = 8.0
+dtype = "bfloat16"
+moss_train_text_refiner = false
+
+[quant]
+preset = "standard"
+
+[optimizer]
+kind = "adamw8bit"
+lr = 1e-4
+max_grad_norm = 1.0
+
+[schedule]
+kind = "rex"
+warmup_steps = 20
+d = 0.8
+
+[flow]
+timestep_sample_method = "moss"
+shift = 1.0

@@ -82,3 +82,4 @@ cache-instant-nl-2gpu.py
 /nihilog.txt
 /sft/
 !configs/moss-image-*-experimental.toml
+!configs/moss-image-lora-staged.toml

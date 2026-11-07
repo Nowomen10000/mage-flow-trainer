@@ -24,6 +24,7 @@ from .paired_texture import PairedTextureConfig
 from .quant import QuantConfig
 from ..modeling.region_tokens import BudgetSchedule
 from .optimizer_specs import OPTIMIZERS
+from .resolution_schedule import ResolutionSchedule
 
 
 @dataclass
@@ -269,8 +270,8 @@ class TrainConfig:
         validate_windows_attention(self.attention_backend, self.pack_resolutions)
         from ..modeling.loader import resolve_model_family
         allows_sdpa_packing = resolve_model_family(self.model_path, self.model_family) in ('flux3', 'moss_image')
-        if self.pack_resolutions and ((self.attention_backend == "sdpa" and not allows_sdpa_packing) or type(self.batch_size) is not int or self.batch_size < 1):
-            raise ValueError("pack_resolutions requires packed attention and a positive integer batch_size")
+        if self.pack_resolutions and ((self.attention_backend == "sdpa" and not allows_sdpa_packing) or (not isinstance(self.batch_size, dict) and (type(self.batch_size) is not int or self.batch_size < 1))):
+            raise ValueError("pack_resolutions requires packed attention and a positive batch_size")
         if type(self.text_cache_batch_size) is not int or self.text_cache_batch_size < 1:
             raise ValueError("train.text_cache_batch_size must be a positive integer")
         for name in ("compile_text_encoder", "text_encoder_embedding_only", "moss_checkpoint_inside_compile"):
@@ -338,6 +339,7 @@ class SelfFlowConfig:
 
 @dataclass
 class Config:
+    resolution_schedule: ResolutionSchedule = field(default_factory=ResolutionSchedule)
     train: TrainConfig = field(default_factory=TrainConfig)
     dataset: DatasetConfig = field(default_factory=lambda: DatasetConfig(path=""))
     flow: FlowConfig = field(default_factory=FlowConfig)
@@ -364,6 +366,7 @@ class Config:
 # `from __future__ import annotations` makes dataclass field types plain strings, so the section
 # classes are resolved from this table rather than from field introspection.
 _SECTIONS = {
+    "resolution_schedule": ResolutionSchedule,
     "train": TrainConfig,
     "dataset": DatasetConfig,
     "flow": FlowConfig,
@@ -486,6 +489,10 @@ def load_config(path: str | Path) -> Config:
     if not p.exists():
         raise FileNotFoundError(f"config not found: {p}")
     raw = tomllib.loads(p.read_text(encoding="utf-8"))
+    if raw.get('resolution_schedule', {}).get('enabled'):
+        forbidden = {'epochs', 'save_every_epochs'} & raw.get('train', {}).keys()
+        if forbidden:
+            raise ValueError(f'Staged resolution training is step-driven; remove train keys {sorted(forbidden)}')
     if raw.get("adapter", {}).get("kind") == "lycoris_lora":
         raw.setdefault("train", {}).setdefault("compile", "default")
 
@@ -545,6 +552,9 @@ def load_config(path: str | Path) -> Config:
             sections[f.name] = _build(_SECTIONS[f.name], data, f.name)
 
     cfg = Config(**sections)
+    cfg.resolution_schedule.validate(cfg)
+    if cfg.resolution_schedule.enabled:
+        cfg.train.save_every_epochs = None
     validate_model_options(cfg)
     if not cfg.dataset.path and not cfg.dataset.subsets:
         raise ValueError("dataset.path (or a [[dataset.subsets]] list) is required")
