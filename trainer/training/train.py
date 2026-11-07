@@ -28,6 +28,11 @@ _SESSION_STARTED_COUNTER = time.perf_counter()
 from .allocator import configure_allocator
 configure_allocator()
 
+# Triton loads this lazily in compiler workers too. Rebuild corrupt group indexes
+# without discarding healthy kernels or overriding a user's custom cache manager.
+os.environ.setdefault("TRITON_CACHE_MANAGER",
+                      "trainer.training.triton_cache:RecoveringFileCacheManager")
+
 # SDNQ may initialize Triton while importing. Choose the Windows C launcher
 # compiler before that happens; MSVC remains available for Inductor's C++ code.
 from ..tools.windows_toolchain import configure_windows_triton_compiler
