@@ -34,7 +34,7 @@ def test_preset_cli_roundtrip_and_encoder_isolation(tmp_path,preset,dtype,qmm,ro
 
 @pytest.mark.parametrize('section,key,value', [
     ('train','model_family','mage_flow'), ('train','dtype','float32'),
-    ('adapter','kind','none'), ('adapter','kind','lora'), ('adapter','lycoris_algo','dora'),
+    ('adapter','kind','none'), ('adapter','kind','lokr'), ('adapter','lycoris_algo','dora'),
     ('adapter','lycoris_bypass',False), ('adapter','dtype','float32')])
 def test_accelerated_preset_rejects_unsupported_training(tmp_path,section,key,value):
     data=config_data();data[section][key]=value
@@ -46,6 +46,22 @@ def test_legacy_settings_unchanged():
     cfg=QuantConfig(mode='training',weights_dtype='uint8')
     assert cfg.preset=='custom' and cfg.mode=='training' and cfg.use_stochastic_rounding
     assert not cfg.use_hadamard
+
+
+@pytest.mark.parametrize('preset', ['balanced', 'fast'])
+def test_peft_accelerated_preset_cli_and_gui_roundtrip(tmp_path, preset):
+    from trainer.gui.bridge import flatten, dump_toml, validate
+    data = config_data(preset)
+    data['adapter'].update(kind='lora', rank=8, alpha=8, lycoris_bypass=False)
+    path = tmp_path/'peft.toml'
+    path.write_text(toml.dumps(data))
+    cfg = load_config(path)
+    assert cfg.adapter.kind == 'lora' and cfg.quant.frozen_matmul
+    flat = flatten(data)
+    assert validate(flat)[0]
+    path.write_text(dump_toml(flat))
+    restored = load_config(path)
+    assert restored.adapter.kind == 'lora' and restored.quant.preset == preset
 
 
 GPU = pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS')!='1', reason='GPU opt-in')
@@ -135,7 +151,8 @@ def test_native_parity_compile_moves_and_state(rotation):
 @GPU
 @pytest.mark.parametrize('preset',['balanced','fast'])
 @pytest.mark.parametrize('calibrated', [False, True])
-def test_moss_adapter_checkpointed_training(preset, calibrated, tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['lycoris_lora', 'lora'])
+def test_moss_adapter_checkpointed_training(preset, calibrated, kind, tmp_path, monkeypatch):
     from trainer.modeling.moss_image import MOSSImage,MOSSParams
     from trainer.training.params import AdapterConfig,apply_adapter
     from trainer.training.lycoris import lycoris_state_dict,load_lycoris_state_dict
@@ -152,7 +169,7 @@ def test_moss_adapter_checkpointed_training(preset, calibrated, tmp_path, monkey
     m=MOSSImage(MOSSParams(dim=256,ffn_dim=512,num_heads=4,num_layers=4,text_dim=128,latent_channels=8)).bfloat16()
     m=quantize_module(m,QuantConfig(preset=preset),torch.device('cuda'),torch.bfloat16,True)
     assert quantized_layer_report(m)[0]>0
-    apply_adapter(m,AdapterConfig(kind='lycoris_lora',rank=4,alpha=4,dtype='bfloat16',moss_train_text_refiner=False))
+    apply_adapter(m,AdapterConfig(kind=kind,rank=8,alpha=8,dtype='bfloat16',moss_train_text_refiner=False))
     m.cuda().bfloat16()
     m.configure_execution(True,compile_mode='default')
     params=[p for p in m.parameters() if p.requires_grad]
@@ -165,10 +182,17 @@ def test_moss_adapter_checkpointed_training(preset, calibrated, tmp_path, monkey
         y=m(x,torch.tensor([.4],device='cuda'),(text,mask))[0]
         y.float().square().mean().backward()
         assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params)
-        assert all(not p.requires_grad for n,p in m.named_parameters() if 'lycoris_adapter' not in n)
+        adapter_names = ('lycoris_adapter',) if kind == 'lycoris_lora' else ('lora_A.', 'lora_B.')
+        assert all(not p.requires_grad for n,p in m.named_parameters() if not any(s in n for s in adapter_names))
         opt.step();opt.zero_grad(set_to_none=True)
     assert any(not torch.equal(a,b) for a,b in zip(before,params))
-    state=lycoris_state_dict(m);load_lycoris_state_dict(m,state)
+    if kind == 'lycoris_lora':
+        state=lycoris_state_dict(m);load_lycoris_state_dict(m,state)
+    else:
+        from peft import get_peft_model_state_dict, set_peft_model_state_dict
+        state = get_peft_model_state_dict(m)
+        set_peft_model_state_dict(m, state)
+        assert all('lora_' in k for k in state)
     assert all('_sdnq' not in k for k in state)
 
 
@@ -243,3 +267,42 @@ def test_encoder_cache_ignores_new_transformer_only_fields():
         legacy.pop(key)
     legacy.update(extra_skip=['lm_head'],use_quantized_matmul=False)
     assert payload==legacy
+
+
+@pytest.mark.skipif(os.environ.get('BLUFLOW_GPU_TESTS') != '1' or os.environ.get('WORLD_SIZE') != '2',
+                    reason='requires two GPU ranks')
+@pytest.mark.parametrize('preset', ['balanced', 'fast'])
+def test_peft_moss_ddp_updates(preset, ddp_device):
+    import torch.distributed as dist
+    from trainer.modeling.moss_image import MOSSImage, MOSSParams
+    from trainer.training.params import AdapterConfig, apply_adapter
+    from trainer.training.distributed import configure_quantized_ddp, sync_quantized_model
+    device = ddp_device
+    torch.set_num_threads(2)
+    torch.manual_seed(42 + dist.get_rank())
+    model = MOSSImage(MOSSParams(dim=256, ffn_dim=512, num_heads=4, num_layers=4,
+                                text_dim=128, latent_channels=8)).bfloat16()
+    model = quantize_module(model, QuantConfig(preset=preset), device, torch.bfloat16, True)
+    apply_adapter(model, AdapterConfig(kind='lora', rank=8, alpha=8, dtype='bfloat16',
+                                      moss_train_text_refiner=False))
+    model.to(device)
+    sync_quantized_model(model)
+    model.configure_execution(True, compile_mode='default')
+    wrapped = torch.nn.parallel.DistributedDataParallel(
+        model, device_ids=[device.index], **configure_quantized_ddp().to_kwargs())
+    params = [p for p in model.parameters() if p.requires_grad]
+    before = [p.detach().clone() for p in params]
+    opt = torch.optim.AdamW(params, lr=1e-3)
+    for length in [8, 10]:
+        x = torch.randn(1, 8, 1, length, 8, device=device, dtype=torch.bfloat16)
+        text = torch.randn(1, 9, 128, device=device, dtype=torch.bfloat16)
+        mask = torch.ones(1, 9, device=device, dtype=torch.bool)
+        wrapped(x, torch.tensor([.4], device=device), (text, mask))[0].float().square().mean().backward()
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params)
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+    assert any(not torch.equal(a, b) for a, b in zip(before, params))
+    for param in params:
+        reference = param.detach().clone()
+        dist.broadcast(reference, 0)
+        assert torch.equal(param, reference)

@@ -11,13 +11,14 @@ from trainer.training.quant import QUANT_PRESETS
 
 
 @pytest.mark.parametrize('preset',['standard','balanced','fast'])
-def test_preset_controls_save_and_reload(monkeypatch,tmp_path,preset):
+@pytest.mark.parametrize('kind',['lycoris_lora','lora'])
+def test_preset_controls_save_and_reload(monkeypatch,tmp_path,preset,kind):
     app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     monkeypatch.setattr(TrainingGUI,'_load_presets',lambda self,**kw:None)
     gui=TrainingGUI(preferences=Preferences(tmp_path/"gui.json"), config_dir=str(tmp_path))
     try:
         gui._apply(bridge.defaults() | {'dataset.path':'/images','train.model_family':'moss_image',
-            'adapter.kind':'lycoris_lora','adapter.dtype':'bfloat16'})
+            'adapter.kind':kind,'adapter.dtype':'bfloat16'})
         gui.editors['quant.preset'].set(preset);gui._on_edit()
         flat=gui.collect()
         for key,value in QUANT_PRESETS[preset].items():

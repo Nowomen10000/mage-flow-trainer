@@ -1,6 +1,7 @@
 """LyCORIS LoRA registered under each target, so DDP and checkpointing see its tensors."""
 
 from dataclasses import asdict
+from functools import wraps
 
 import torch
 
@@ -34,14 +35,56 @@ class SDNQWeightAccess:
 _ADAPTER_CLASSES = None
 
 
+def install_allocator_safe_timing():
+    """Avoid pinned LyCORIS's graph-capture/free abort with cudaMallocAsync.
+
+    Patch only its tuner's timing entry point, not the kernels or torch.compile.
+    Native allocation retains upstream graph timing; already cached choices work.
+    """
+    from lycoris.kernels.tuner import measure
+
+    original = measure.time_candidates
+    if getattr(original, '_bluflow_allocator_guard', False):
+        return
+    announced = False
+
+    @wraps(original)
+    def time_candidates(makers, sets, dev, rounds=4, use_graph=True, prune=2.0, errors=None):
+        nonlocal announced
+        if dev.kind == 'cuda' and torch.cuda.memory.get_allocator_backend() == 'cudaMallocAsync':
+            use_graph = False
+            if not announced:
+                print('LyCORIS: using CUDA-event tuning without graph capture for cudaMallocAsync; '
+                      'fused adapter kernels remain enabled.', flush=True)
+                announced = True
+        return original(makers, sets, dev, rounds=rounds, use_graph=use_graph,
+                        prune=prune, errors=errors)
+
+    time_candidates._bluflow_allocator_guard = True
+    measure.time_candidates = time_candidates
+
+
+class ContiguousLoConInput:
+    def bypass_forward_diff(self, x, scale=1):
+        # Pinned LyCORIS's atomic bypass backward allocates empty_like(x), but
+        # indexes that gradient using x's strides. Sliced/broadcast inputs can
+        # therefore write outside the allocation (verified with compute-sanitizer).
+        # Keep the frozen base unchanged; normalize only the adapter input.
+        # Already contiguous activations incur no copy.
+        return super().bypass_forward_diff(x.contiguous(), scale=scale)
+
+
 def algorithm_classes():
     global _ADAPTER_CLASSES
     if _ADAPTER_CLASSES is None:
         from lycoris.modules import LoConModule, LokrModule
 
+        install_allocator_safe_timing()
         base = dict(locon=LoConModule, lokr=LokrModule, dora=LoConModule)
         _ADAPTER_CLASSES = {
-            k: type("Mage" + k.title(), (SDNQWeightAccess, cls), {})
+            k: type("Mage" + k.title(),
+                    (SDNQWeightAccess, ContiguousLoConInput, cls)
+                    if k in ("locon", "dora") else (SDNQWeightAccess, cls), {})
             for k, cls in base.items()
         }
     return _ADAPTER_CLASSES

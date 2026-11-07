@@ -105,6 +105,7 @@ def fingerprint(device, shapes, tokens):
                 sdnq=version('sdnq'), dtype='bfloat16', shapes=[list(s) for s in shapes], tokens=list(tokens),
                 kernel_hash=hashlib.sha256(Path(kernel.__file__).read_bytes()).hexdigest(),
                 calibration_hash=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                allocator=torch.cuda.memory.get_allocator_backend(),
                 candidates=candidate_tiles())
 
 
@@ -239,18 +240,27 @@ def _measure(fn, device):
     torch.cuda.synchronize(device)
     # Capture repeated launches to exclude Python dispatch and allocation gaps
     # from timings, especially for small matrices. Compilation happened above.
-    graph = torch.cuda.CUDAGraph()
     repeats = 5
-    with torch.cuda.graph(graph):
-        for _ in range(repeats):
-            out = fn()
-    graph.replay()
+    # cudaMallocAsync can abort in free_impl when captured temporaries are
+    # released; a Python exception handler cannot recover from that abort.
+    # Keep that allocator, but time ordinary launches instead of graph capture.
+    graph = None
+    if torch.cuda.memory.get_allocator_backend() != 'cudaMallocAsync':
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for _ in range(repeats):
+                out = fn()
+        graph.replay()
     torch.cuda.synchronize(device)
     times = []
     for _ in range(7):
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         start.record()
-        graph.replay()
+        if graph is not None:
+            graph.replay()
+        else:
+            for _ in range(repeats):
+                out = fn()
         end.record()
         end.synchronize()
         times.append(start.elapsed_time(end) / repeats)
@@ -327,7 +337,8 @@ def calibrate(device, identity, log=print):
                                'Free GPU memory and retry, or use the Standard preset.')
     return dict(identity=identity, entries=entries, rejected=rejected,
                 validation='CPU INT64 sampled rows/columns including tile edges; aligned and odd token counts',
-                timing='median of 7 CUDA-event graph replays, 5 launches each, after compilation and warmup')
+                timing=('median of 7 CUDA-event samples, 5 launches each, after compilation and warmup; '
+                        'eager launches with cudaMallocAsync, graph replays with native allocator'))
 
 
 def prepare(device, shapes, *, mode='auto', force=False, root=None, tokens=TOKEN_ANCHORS, log=print):

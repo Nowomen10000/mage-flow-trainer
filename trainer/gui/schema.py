@@ -710,7 +710,7 @@ SPEC: dict[str, Spec] = {
         "MOSS adapter preset",
         "Standard: UINT8 storage with BF16 matmul. Balanced: Hadamard rotation + INT8 matmul. "
         "Fast: INT8 matmul without rotation. Presets override the locked quantization fields; "
-        "Custom preserves manual settings. Balanced/Fast require BF16 LyCORIS LoCon with bypass. "
+        "Custom preserves manual settings. Balanced/Fast support BF16 PEFT LoRA or BF16 LyCORIS LoCon with bypass. "
         "These presets are for MOSS adapters, not full finetuning.",
         lambda: F.ChoiceEditor(["Custom", "Standard — UINT8 / BF16", "Balanced — Hadamard / INT8",
                                 "Fast — INT8 matmul"], ["custom", "standard", "balanced", "fast"])),
@@ -730,7 +730,7 @@ SPEC: dict[str, Spec] = {
         lambda: F.ChoiceEditor(["int8", "uint8", "fp8", "int7", "int6", "int5", "int4"])),
     "quant.use_quantized_matmul": _spec(
         "Quantized matmul",
-        'Auto defaults to off. Frozen MOSS INT8 matmul requires BF16 LyCORIS LoCon with bypass, INT8 weights, group_size=-1 and stochastic rounding off. Use Balanced/Fast to configure it.',
+        'Auto defaults to off. Frozen MOSS INT8 matmul requires BF16 PEFT LoRA or bypass LyCORIS LoCon, INT8 weights, group_size=-1 and stochastic rounding off. Use Balanced/Fast to configure it.',
         lambda: F.ChoiceEditor(["auto", "on", "off"], ["auto", True, False])),
     "quant.matmul_tuning": _spec(
         "INT8 kernel calibration",

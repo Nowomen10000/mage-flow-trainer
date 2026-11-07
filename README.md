@@ -375,8 +375,10 @@ preset = "balanced"  # "standard", "balanced", "fast", or "custom"
 python -m trainer.training.train configs/my-moss-locon.toml
 ```
 
-The presets require **MOSS BF16 adapter training**. Balanced/Fast currently require
-**LyCORIS LoCon, BF16 adapter dtype, bypass enabled, and random initialization**:
+The presets require **MOSS BF16 adapter training**. Balanced/Fast support
+**PEFT LoRA or bypass LyCORIS LoCon**, with **BF16 adapter dtype and random
+initialization**. For PEFT, select **LoRA (PEFT)** in the GUI, set adapter dtype to
+**bfloat16**, and choose Balanced or Fast. The equivalent TOML is:
 
 ```toml
 [train]
@@ -384,12 +386,22 @@ model_family = "moss_image"
 dtype = "bfloat16"
 
 [adapter]
-kind = "lycoris_lora"
-lycoris_algo = "locon"
+kind = "lora"
 dtype = "bfloat16"
-lycoris_bypass = true
 init = "random"
 ```
+
+For LyCORIS, use `kind = "lycoris_lora"`, `lycoris_algo = "locon"`, and
+`lycoris_bypass = true` instead. LoKr and DoRA are not supported by Balanced/Fast.
+
+LoCon adapter inputs are made contiguous to avoid an out-of-bounds gradient write
+in the pinned LyCORIS atomic kernel with strided inputs. This guard preserves the
+SDNQ base-model kernels. Both INT8 calibration and LyCORIS kernel tuning avoid
+CUDA graph capture with `cudaMallocAsync`, which can abort while freeing captured
+allocations. They use CUDA-event timing instead, retaining fused training kernels
+and model compilation. These guards were verified on Linux; Windows confirmation
+is pending. If a LyCORIS-specific crash persists, PEFT LoRA can use the same
+Balanced/Fast preset.
 
 Use native BF16 source transformer weights. SDNQ **0.2.9** performs quantization;
 Balanced/Fast do **not** require ComfyUI or Comfy Kitchen. They support frozen-base

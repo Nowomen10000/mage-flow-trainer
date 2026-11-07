@@ -416,14 +416,17 @@ def validate_model_options(cfg):
         raise ValueError("Quantization presets require MOSS BF16 adapter training; "
                          "use quant.preset='custom' for full finetuning or other models")
     if cfg.quant.frozen_matmul:
+        supported_adapter = cfg.adapter.kind == "lora" or (
+            cfg.adapter.kind == "lycoris_lora" and cfg.adapter.lycoris_algo == "locon"
+            and cfg.adapter.lycoris_bypass
+        )
         if (cfg.train.model_family != "moss_image" or cfg.train.dtype != "bfloat16"
-                or cfg.adapter.kind != "lycoris_lora" or cfg.adapter.lycoris_algo != "locon"
-                or not cfg.adapter.lycoris_bypass or cfg.adapter.dtype != "bfloat16"
+                or not supported_adapter or cfg.adapter.dtype != "bfloat16"
                 or cfg.adapter.init != "random" or cfg.quant.weights_dtype != "int8"
                 or cfg.quant.group_size != -1 or cfg.quant.use_stochastic_rounding
                 or cfg.quant.dynamic_loss_threshold is not None):
             raise ValueError("Frozen SDNQ INT8 matmul input-gradient path requires MOSS BF16 "
-                             "LyCORIS LoCon, BF16 adapters, bypass and random initialization, "
+                             "PEFT LoRA or bypass LyCORIS LoCon, BF16 adapters and random initialization, "
                              "INT8 weights, group_size=-1, stochastic rounding off and no dynamic "
                              "loss threshold. Choose quant.preset='balanced' or 'fast' for the "
                              "quantization settings, or disable quantized matmul.")
