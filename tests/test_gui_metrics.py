@@ -25,7 +25,7 @@ def test_snapshot_renders_hidden_metrics_and_flushes_all_pending(tmp_path):
         for step in range(1, 4):
             widget.parse_and_update(f'e0 step {step}/3 loss 0.{step} lr 1e-4 2.0s/it peak 8.0GB')
         assert widget.isHidden() and len(widget.pending) == 3
-        path = tmp_path / 'run' / 'metrics-final.png'
+        path = tmp_path / '日本語の出力 📈' / 'metrics-final.png'
         widget.save_snapshot(path)
         image = QtGui.QImage(str(path))
         assert not image.isNull() and image.width() >= 1280 and image.height() >= 900

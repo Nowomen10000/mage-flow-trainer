@@ -181,7 +181,10 @@ class ProcessRunner(QThread):
         super().__init__()
         self.launch = launch
         self.working_dir = working_dir
-        self.env = env
+        self.env = dict(os.environ if env is None else env)
+        # Match the pipe reader regardless of the Windows non-Unicode locale
+        # or an inherited PYTHONIOENCODING. Accelerate's children inherit this.
+        self.env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
         self.process = None
         self.stop_requested = False
 
@@ -202,7 +205,9 @@ class ProcessRunner(QThread):
             self.process = subprocess.Popen(
                 self.launch.argv, cwd=self.working_dir, env=self.env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                universal_newlines=True, bufsize=1, **popen_options)
+                # Native tools can still emit legacy bytes. Preserve the rest
+                # of the log and completion events instead of aborting reading.
+                encoding="utf-8", errors="replace", bufsize=1, **popen_options)
             self.logSignal.emit(f"INFO: {self.launch.label} started (PID {self.process.pid})")
             for line in iter(self.process.stdout.readline, ''):
                 line = self._clean(line.rstrip("\n"))
