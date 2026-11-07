@@ -44,6 +44,7 @@ def queue_gui(monkeypatch, tmp_path):
     # Generic queue cases use cache/train pairs on every OS. The dedicated
     # preflight test below supplies its own Windows job explicitly.
     monkeypatch.setattr(gui_module, "toolchain_jobs", lambda path: [])
+    monkeypatch.setattr(gui_module, "PROJECT_ROOT", tmp_path)
     qapp = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     monkeypatch.setattr(TrainingGUI, "_load_presets", lambda self, **kwargs: None)
     monkeypatch.setattr(gui_module, "ProcessRunner", FakeRunner)
@@ -468,13 +469,15 @@ def test_single_start_empty_queue_does_not_prompt(queue_gui, monkeypatch, tmp_pa
     assert len(FakeRunner.instances) == 1 and gui.runner.isRunning()
 
 
-def test_queue_final_save_snapshots_each_run_before_graph_reset(queue_gui, tmp_path):
+@pytest.mark.parametrize('kind', ['lora', 'lycoris_lora'])
+@pytest.mark.parametrize('notification', ['present', 'missing', 'malformed'])
+def test_queue_final_save_snapshots_each_run_before_graph_reset(queue_gui, tmp_path, kind, notification):
     import json
     from PySide6 import QtGui
     gui, paths, qapp = queue_gui
     for i, path in enumerate(paths):
         path.write_text(f'[train]\nrun_name="run{i}"\noutput_dir="{tmp_path.as_posix()}"\n'
-                        f'[dataset]\npath="/dataset{i}"\n')
+                        f'[dataset]\npath="/dataset{i}"\n[adapter]\nkind="{kind}"\n')
     gui.run_queue.list.clear()
     gui.run_queue.add_paths(paths)
     gui._start_queue()
@@ -486,23 +489,31 @@ def test_queue_final_save_snapshots_each_run_before_graph_reset(queue_gui, tmp_p
         gui.runner.metricsSignal.emit(f'e0 step {i+1}/2 loss 0.{i+1} lr 1e-4 2.0s/it peak 8.0GB')
         directory = tmp_path / f'run{i}'
         marker = 'BLUFLOW_FINAL_SAVE ' + json.dumps({'output_dir': str(directory), 'step': i+1})
-        gui.runner.metricsSignal.emit(marker)
         path = directory / 'metrics-final.png'
+        before = None
+        if notification == 'present':
+            gui.runner.metricsSignal.emit(marker)
+            before = path.read_bytes()
+            gui.runner.metricsSignal.emit(marker)  # Duplicate notification is harmless.
+            assert path.read_bytes() == before
+        elif notification == 'malformed':
+            gui.runner.metricsSignal.emit('BLUFLOW_FINAL_SAVE {broken')
+        if notification != 'present':
+            assert not path.exists()
+        gui.runner.complete()
+        # Completion must save synchronously, before processing the next job.
         image = QtGui.QImage(str(path))
         assert not image.isNull()
         assert not gui.metrics.pending and gui.metrics.latest['step'] == i+1
         assert gui.tab_bar.currentIndex() == gui.queue_tab
-        before = path.read_bytes()
-        gui.runner.metricsSignal.emit(marker)  # Duplicate notification is harmless.
-        assert path.read_bytes() == before
-        gui.runner.complete()
+        if before is not None:
+            assert path.read_bytes() == before
         qapp.processEvents()
     assert [e.status for e in gui.run_queue.entries()] == ['Completed', 'Completed']
 
 
 def test_metrics_snapshot_failure_does_not_stop_queue(queue_gui, monkeypatch):
     import json
-    from trainer.gui.widgets import PROJECT_ROOT
     gui, paths, qapp = queue_gui
     gui._start_queue()
     gui.runner.complete()
@@ -511,9 +522,58 @@ def test_metrics_snapshot_failure_does_not_stop_queue(queue_gui, monkeypatch):
         raise OSError('disk full')
     monkeypatch.setattr(gui.metrics, 'save_snapshot', fail)
     gui.runner.metricsSignal.emit('BLUFLOW_FINAL_SAVE ' + json.dumps({
-        'output_dir': str(PROJECT_ROOT / 'output/run0'), 'step': 1}))
+        'output_dir': str(gui_module.PROJECT_ROOT / 'output/run0'), 'step': 1}))
     assert not gui._metrics_snapshot_saved
     gui.runner.complete()
     qapp.processEvents()
     assert gui.run_queue.entries()[0].status == 'Completed'
     assert '/dataset1' in gui.runner.launch.argv
+
+
+@pytest.mark.parametrize('outcome', ['cache_failure', 'training_failure', 'stopped', 'skip_final'])
+def test_snapshot_fallback_requires_successful_final_training(queue_gui, outcome):
+    gui, paths, qapp = queue_gui
+    if outcome == 'skip_final':
+        paths[0].write_text(paths[0].read_text() + 'skip_final_save=true\n')
+        gui.run_queue.list.clear()
+        gui.run_queue.add_paths(paths)
+    gui._start_queue()
+    if outcome == 'cache_failure':
+        gui.runner.complete(1)
+    else:
+        gui.runner.complete()
+        qapp.processEvents()
+        gui.runner.metricsSignal.emit('e0 step 1/2 loss 0.5 lr 1e-4 2.0s/it peak 8.0GB')
+        if outcome == 'stopped':
+            gui._stop()
+        else:
+            gui.runner.complete(1 if outcome == 'training_failure' else 0)
+    qapp.processEvents()
+    assert not (gui_module.PROJECT_ROOT / 'output/run0/metrics-final.png').exists()
+
+
+def test_snapshot_completion_retries_failed_notification_save(queue_gui, monkeypatch):
+    import json
+    from PySide6 import QtGui
+    gui, _, qapp = queue_gui
+    gui._start_queue()
+    gui.runner.complete()
+    qapp.processEvents()
+    gui.runner.metricsSignal.emit('e0 step 2/2 loss 0.5 lr 1e-4 2.0s/it peak 8.0GB')
+    save = gui.metrics.save_snapshot
+    calls = []
+    def flaky(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError('temporary file lock')
+        save(path)
+    monkeypatch.setattr(gui.metrics, 'save_snapshot', flaky)
+    directory = gui_module.PROJECT_ROOT / 'output/run0'
+    gui.runner.metricsSignal.emit('BLUFLOW_FINAL_SAVE ' + json.dumps({'output_dir': str(directory)}))
+    assert not gui._metrics_snapshot_saved
+    gui.runner.complete()
+    path = directory / 'metrics-final.png'
+    assert calls == [path, path]
+    assert gui._metrics_snapshot_saved and not QtGui.QImage(str(path)).isNull()
+    qapp.processEvents()
+    assert gui.run_queue.entries()[0].status == 'Completed'

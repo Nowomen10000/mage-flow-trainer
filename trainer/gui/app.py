@@ -1038,18 +1038,31 @@ class TrainingGUI(QtWidgets.QWidget):
     def _handle_metrics(self, line):
         self.metrics.parse_and_update(line)
         prefix = "BLUFLOW_FINAL_SAVE "
+        line = line.strip()
         if not (line.startswith(prefix) and self._batch_queue_active
                 and self._running_training and not self._queue_cancelled
                 and not getattr(self, "_metrics_snapshot_saved", False)):
             return
         try:
             event = json.loads(line[len(prefix):])
+            self._save_queue_metrics_snapshot(event["output_dir"])
+        except (ValueError, KeyError, TypeError) as exc:
+            self.log(f"Could not read final-save notification: {exc}")
+
+    def _save_queue_metrics_snapshot(self, output_dir=None):
+        if not (self._batch_queue_active and self._running_training
+                and not self._queue_cancelled
+                and not getattr(self, "_metrics_snapshot_saved", False)):
+            return
+        try:
             entry = self.run_queue.entry(self._active_queue_index)
             train = bridge.read_toml(entry.snapshot).get("train", {})
+            if output_dir is None and train.get("skip_final_save", False):
+                return
             directory = Path(train.get("output_dir", "output")) / train.get("run_name", "mageflow")
             if not directory.is_absolute():
                 directory = PROJECT_ROOT / directory
-            if Path(event["output_dir"]).resolve() != directory.resolve():
+            if output_dir is not None and Path(output_dir).resolve() != directory.resolve():
                 raise ValueError("Final-save output folder does not match the queued TOML")
             path = directory / "metrics-final.png"
             self.metrics.save_snapshot(path)
@@ -1241,6 +1254,9 @@ class TrainingGUI(QtWidgets.QWidget):
                 self._queue_entry_failed(f"Process exited with code {code}.\n{self._queue_output_tail}".strip())
             else:
                 if self._running_training:
+                    # A lost/malformed stdout notification must not silently
+                    # lose the PNG. Save before the next job resets the graphs.
+                    self._save_queue_metrics_snapshot()
                     self.run_queue.mark(self._active_queue_index, "Completed")
                 self._schedule_next_job()
             self._refresh()
