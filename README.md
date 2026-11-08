@@ -526,9 +526,9 @@ optimizer updates**, never epochs: `train.max_steps` is required; `epochs` and
 enabled = true
 save_stage_end = true
 stages = [
-  {resolution = 512, share = 0.20},
-  {resolution = 768, share = 0.20},
-  {resolution = 1024, share = 0.60},
+  {resolution = 512, share = 0.20, lr_mul = 0.8},
+  {resolution = 768, share = 0.20, lr_mul = 0.9},
+  {resolution = 1024, share = 0.60, lr_mul = 1.0},
 ]
 ```
 
@@ -545,6 +545,13 @@ weights. Small sources remain eligible at later tiers without forced upscaling,
 reusing identical latent files. Cache all tiers before starting. Shares divide
 updates, not wall-clock time or image exposure.
 
+The GUI's **LR %** column scales the scheduled LR per stage: 80% at 512, 90% at
+768, and 100% at 1024 in the preset. `lr_mul` must be greater than zero and at
+most one; older TOMLs without it keep 100%. This applies to every parameter
+group without compounding across updates. Logs show the LR actually used.
+Warmup and decay still apply: a decaying schedule does not restart or regain its
+configured peak when the 1024 stage begins.
+
 The optimizer and LR schedule continue across stages, with one warmup. New
 shapes can compile at transitions. Skipped nonfinite attempts do not advance the
 stage or scheduler; repeated nonfinite updates still stop training. Metrics show
@@ -557,7 +564,7 @@ configs/moss-image-lora-staged.toml`. `--dry-run` performs one successful update
 per stage without saving; `--no-save` disables periodic, stage-boundary, and final
 checkpoints.
 
-Full-state resume requires the same stage plan, data manifest, batch sizes,
+Full-state resume requires the same stage plan (including LR multipliers), data manifest, batch sizes,
 accumulation, and GPU count; enable optimizer-state saving for this. Weights-only
 continuation starts a fresh plan and schedule. Texture/timestep curricula, OT,
 Self-Flow, gradient release, preservation, and decoded perceptual/adversarial

@@ -22,6 +22,7 @@ def test_bridge_staged_round_trip_omits_epochs(tmp_path):
     p.write_text(text)
     cfg = load_config(p)
     assert cfg.resolution_schedule.budgets(cfg.train.max_steps) == [112,112,336]
+    assert [s.lr_mul for s in cfg.resolution_schedule.stages] == [.8, .9, 1.0]
     assert bridge.validate(flat)[0]
     flat['resolution_schedule.enabled'] = False
     assert 'epochs = 100' in bridge.dump_toml(flat)
@@ -30,12 +31,12 @@ def test_bridge_staged_round_trip_omits_epochs(tmp_path):
 def test_stage_editor_budget_and_batch_preview():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     editor = ResolutionStagesEditor()
-    stages = [dict(resolution=r,share=s) for r,s in ((512,.2),(768,.2),(1024,.6))]
+    stages = [dict(resolution=r,share=s,lr_mul=lr) for r,s,lr in ((512,.2,.8),(768,.2,.9),(1024,.6,1.))]
     editor.set(stages)
     assert editor.get() == stages
     editor.preview(560,{512:24,768:12,1024:7},2,1)
-    assert [editor.table.item(r,3).text() for r in range(3)] == ['112','112','336']
-    assert editor.table.item(0,4).text() == '48'
+    assert [editor.table.item(r,4).text() for r in range(3)] == ['112','112','336']
+    assert editor.table.item(0,5).text() == '48'
     editor.widget.deleteLater()
     app.processEvents()
 
@@ -67,6 +68,8 @@ def test_gui_enabling_stages_hides_epochs_and_seeds_valid_plan(gui):
     assert flat['train.pack_resolutions']
     assert flat['train.max_steps'] == 560
     assert abs(sum(s['share'] for s in flat['resolution_schedule.stages']) - 1) < 1e-9
+    assert {s['resolution']: s['lr_mul'] for s in flat['resolution_schedule.stages']} == {
+        256: 1., 384: 1., 512: .8, 640: 1., 768: .9, 1024: 1.}
     assert all(w.isHidden() for w in gui.rows['train.epochs'])
     assert not gui.editors['dataset.tier_collapse'].widget.isEnabled()
     ok, error = bridge.validate(flat)

@@ -932,20 +932,24 @@ class Trainer:
             self.keep_fraction, self.rti_phase = self.rti_budget.resolve(self.global_step)
 
     def _apply_lr_mul(self) -> None:
-        """Scale the scheduler's current LR by the phase multiplier.
+        """Scale the scheduler's current LR by the active stage/phase multiplier.
 
         Set absolutely from `get_last_lr()` rather than multiplied in place: this runs on every
         iteration but the scheduler only advances on sync boundaries, so an in-place multiply
         would compound `lr_mul` once per accumulation micro-step -- silently turning lr_mul=0.5
         into 0.5^accum.
         """
-        if not self.phase or self.phase.lr_mul == 1.0:
-            return
+        if self.cfg.resolution_schedule.enabled:
+            multiplier = self.cfg.resolution_schedule.stages[self.stage_index].lr_mul
+        else:
+            if not self.phase or self.phase.lr_mul == 1.0:
+                return
+            multiplier = self.phase.lr_mul
         last = getattr(self.scheduler, "get_last_lr", None)
         if last is None:
             return
         for pg, lr in zip(self.optimizer.param_groups, last()):
-            pg["lr"] = lr * self.phase.lr_mul
+            pg["lr"] = lr * multiplier
 
     # ---------------------------------------------------------------- run
 
@@ -972,7 +976,8 @@ class Trainer:
                 effective = cfg.train.batch_size[resolution] * self.accelerator.num_processes * cfg.train.gradient_accumulation_steps
                 if self.accelerator.is_main_process:
                     _emit(self, f'stage    {stage + 1}/{len(ends)}: {resolution}px, '
-                               f'{self.sampler.budgets[stage]} successful updates, effective batch {effective}')
+                               f'{self.sampler.budgets[stage]} successful updates, effective batch {effective}, '
+                               f'LR x{cfg.resolution_schedule.stages[stage].lr_mul:g}')
             self.sampler.configure(stage, self.stage_cursor, ends[stage] - self.global_step)
             # A private worker RNG prevents loader construction from advancing model
             # RNG on transitions or resume. Captions are seeded per sample/cycle.
@@ -989,7 +994,8 @@ class Trainer:
         if not self.cfg.resolution_schedule.enabled:
             return None
         return dict(identity=self.sampler.identity, stage=self.stage_index, cursor=self.stage_cursor,
-                    images=self.stage_images, attempts=self.stage_attempts)
+                    images=self.stage_images, attempts=self.stage_attempts,
+                    lr_multipliers=[s.lr_mul for s in self.cfg.resolution_schedule.stages])
 
     def train(self) -> None:
         cfg = self.cfg
@@ -1059,6 +1065,8 @@ class Trainer:
                                 if cfg.optimizer.max_grad_norm > 0:
                                     torch.nn.utils.clip_grad_norm_(trainable, cfg.optimizer.max_grad_norm)
                                 self._apply_lr_mul()
+                                if cfg.resolution_schedule.enabled:
+                                    self._last_update_lrs = [group['lr'] for group in self.optimizer.param_groups]
                                 if acc.num_processes > 1:
                                     from .distributed import quantized_optimizer_rng
                                     with quantized_optimizer_rng(acc.device, cfg.train.seed, self.global_step):
@@ -1198,7 +1206,10 @@ class Trainer:
         # A/B GB` convention already used for per-rank memory, and collapsed to one number when the
         # groups agree, so the common case reads as before. The startup report names the groups in
         # this same order.
-        lrs = self.scheduler.get_last_lr()
+        # The scheduler has already advanced to the next unscaled rate. Staged
+        # logs must show the penalized LR that produced the reported update.
+        lrs = (self._last_update_lrs if self.cfg.resolution_schedule.enabled
+               else self.scheduler.get_last_lr())
         lr = "/".join(f"{v:.2e}" for v in lrs) if len(set(lrs)) > 1 else f"{lrs[0]:.2e}"
         dt = (time.time() - t0) / max(1, self.cfg.train.log_every)
         def memory_field(column):
@@ -1254,6 +1265,7 @@ class Trainer:
                         completed=self.global_step - sum(self.sampler.budgets[:stage]),
                         total=self.sampler.budgets[stage], images=self.stage_images[stage],
                         attempts=self.stage_attempts[stage],
+                        lr_mul=self.cfg.resolution_schedule.stages[stage].lr_mul,
                         effective_batch=self.cfg.train.batch_size[self.cfg.resolution_schedule.stages[stage].resolution]
                         * acc.num_processes * self.cfg.train.gradient_accumulation_steps)
             _emit(self, 'BLUFLOW_STAGE ' + json.dumps(info))
@@ -1306,7 +1318,7 @@ class Trainer:
         if cfg.resolution_schedule.enabled:
             print(f"steps    {self.total_steps} successful updates, {self.accelerator.num_processes} process(es)")
             for i, (stage, budget) in enumerate(zip(cfg.resolution_schedule.stages, self.sampler.budgets)):
-                print(f"         stage {i + 1}: {stage.resolution}px, {budget} updates, batch/GPU {cfg.train.batch_size[stage.resolution]}")
+                print(f"         stage {i + 1}: {stage.resolution}px, {budget} updates, batch/GPU {cfg.train.batch_size[stage.resolution]}, LR x{stage.lr_mul:g}")
         else:
             print(f"steps    {self.total_steps} total, {self.steps_per_epoch}/epoch, "
                   f"{self.accelerator.num_processes} process(es)")
@@ -1644,6 +1656,9 @@ class Trainer:
         if staged:
             if staged['identity'] != self.sampler.identity:
                 raise ValueError('Staged resume plan/data/batch size/GPU count changed; use weights-only for a new plan')
+            multipliers = [s.lr_mul for s in self.cfg.resolution_schedule.stages]
+            if staged.get('lr_multipliers', [1.0] * len(multipliers)) != multipliers:
+                raise ValueError('Staged resume LR multipliers changed; use weights-only for a new plan')
             self.stage_index, self.stage_cursor = staged['stage'], staged['cursor']
             self.stage_images, self.stage_attempts = staged['images'], staged['attempts']
         self.timing.resume(saved_state.get("training_timing"))

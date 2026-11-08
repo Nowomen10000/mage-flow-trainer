@@ -911,7 +911,8 @@ class TrainingGUI(QtWidgets.QWidget):
                         shares = [.2, .2, .6] if len(tiers) == 3 else [round(100 / len(tiers), 4) / 100] * len(tiers)
                         shares[-1] = 1 - sum(shares[:-1])
                         self.editors['resolution_schedule.stages'].set([
-                            dict(resolution=t, share=w) for t, w in zip(tiers, shares)])
+                            dict(resolution=t, share=w, lr_mul={512: .8, 768: .9}.get(t, 1.0))
+                            for t, w in zip(tiers, shares)])
                     self.editors['dataset.resolutions'].set(tiers)
                     batch = self.editors['train.batch_size'].get()
                     if not isinstance(batch, dict):

@@ -942,8 +942,8 @@ class ResolutionStagesEditor(_Blockable):
         super().__init__(box)
         layout = QtWidgets.QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(['Resolution', 'Share %', 'Batch/GPU', 'Updates', 'Effective batch'])
+        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(['Resolution', 'Share %', 'LR %', 'Batch/GPU', 'Updates', 'Effective batch'])
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
         buttons = QtWidgets.QHBoxLayout()
@@ -979,13 +979,19 @@ class ResolutionStagesEditor(_Blockable):
             share.setRange(0, 100)
             share.setDecimals(4)
             share.setValue(stage['share'] * 100)
-            for col, widget in enumerate((resolution, share)):
+            lr = NoScrollDoubleSpinBox()
+            lr.setDecimals(4)
+            lr.setRange(0.0001, 100)
+            lr.setValue(stage.get('lr_mul', 1.0) * 100)
+            lr.setToolTip('Percent of the scheduled LR: 80 means a 20% penalty. Does not restart warmup or decay.')
+            for col, widget in enumerate((resolution, share, lr)):
                 self.table.setCellWidget(row, col, widget)
                 widget.valueChanged.connect(self._emit)
 
     def get(self):
         return [dict(resolution=self.table.cellWidget(r, 0).value(),
-                     share=self.table.cellWidget(r, 1).value() / 100)
+                     share=self.table.cellWidget(r, 1).value() / 100,
+                     lr_mul=self.table.cellWidget(r, 2).value() / 100)
                 for r in range(self.table.rowCount())]
 
     def preview(self, total, batches, world, accumulation):
@@ -999,13 +1005,13 @@ class ResolutionStagesEditor(_Blockable):
                 batch = batches.get(stage['resolution'])
                 if batch is None:
                     raise ValueError('Every stage needs a batch size in Batching')
-                for col, value in enumerate((batch, budget, batch * world * accumulation), 2):
+                for col, value in enumerate((batch, budget, batch * world * accumulation), 3):
                     item = QtWidgets.QTableWidgetItem(str(value))
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                     self.table.setItem(row, col, item)
             self.summary.setText(f'{total} successful updates; skipped attempts do not consume the budget. Epoch settings are unavailable.')
         except (ValueError, TypeError) as exc:
             for row in range(self.table.rowCount()):
-                for col in range(2, 5):
+                for col in range(3, 6):
                     self.table.setItem(row, col, QtWidgets.QTableWidgetItem('—'))
             self.summary.setText(str(exc))

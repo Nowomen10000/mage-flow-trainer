@@ -25,9 +25,9 @@ compile = "default"
 enabled = true
 save_stage_end = true
 stages = [
-  {resolution = 512, share = 0.20},
-  {resolution = 768, share = 0.20},
-  {resolution = 1024, share = 0.60},
+  {resolution = 512, share = 0.20, lr_mul = 0.8},
+  {resolution = 768, share = 0.20, lr_mul = 0.9},
+  {resolution = 1024, share = 0.60, lr_mul = 1.0},
 ]
 
 [adapter]

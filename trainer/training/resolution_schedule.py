@@ -7,12 +7,15 @@ import math
 class ResolutionStage:
     resolution: int
     share: float
+    lr_mul: float = 1.0
 
     def __post_init__(self):
         if type(self.resolution) is not int or self.resolution <= 0:
             raise ValueError('Stage resolution must be a positive integer')
         if not math.isfinite(self.share) or self.share <= 0:
             raise ValueError('Stage share must be finite and positive')
+        if isinstance(self.lr_mul, bool) or not math.isfinite(self.lr_mul) or not 0 < self.lr_mul <= 1:
+            raise ValueError('Stage lr_mul must be finite and in (0, 1]')
 
 
 @dataclass
