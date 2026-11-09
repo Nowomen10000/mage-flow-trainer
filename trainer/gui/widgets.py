@@ -278,11 +278,14 @@ class SearchableComboBox(NoScrollComboBox):
         text = self.itemText(self.currentIndex()) if self.currentIndex() >= 0 else ""
         if self.lineEdit().text() != text:
             self.lineEdit().setText(text)
+        self.lineEdit().setCursorPosition(0)
 
     def focusInEvent(self, e):
         super().focusInEvent(e)
         # Select-all so the first keystroke starts a fresh query instead of appending to the name.
-        QtCore.QTimer.singleShot(0, self.lineEdit().selectAll)
+        # Select backwards so long filenames remain scrolled to their beginning.
+        edit = self.lineEdit()
+        QtCore.QTimer.singleShot(0, lambda: edit.setSelection(len(edit.text()), -len(edit.text())))
 
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
