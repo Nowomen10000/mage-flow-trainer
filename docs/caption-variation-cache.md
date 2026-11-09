@@ -1,6 +1,12 @@
 # Persistent caption variation caching
 
-Enable **Cache text embeddings** and set **Caption variations per image** above zero. The trainer builds a SQLite database before loading Mage-Flow, then releases Qwen3-VL. The database defaults to `caption_variations.sqlite` in the first dataset folder; set **Caption cache database** to place it on a larger drive. One database can cover all subsets and share exact caption matches across them.
+Enable **Cache text embeddings** and set **Caption variations per image** above zero. The trainer builds a SQLite database before loading the transformer, then releases the text encoder. The database defaults to `cached_text_embeddings/caption_variations.sqlite` in the first dataset folder; the directory is created automatically. Set **Caption cache database** to use a different path. One database can cover all subsets and share exact caption matches across them.
+
+Explicit cache paths are unchanged. Existing databases at the old dataset-root location
+are left untouched; set **Caption cache database** to that file to keep reusing it,
+or leave the field empty to build a cache in the new folder. Once training and caching
+jobs are stopped, the default `cached_text_embeddings/` folder can be deleted to clear
+its generated cache files. They will be rebuilt on the next run.
 
 ```toml
 [train]

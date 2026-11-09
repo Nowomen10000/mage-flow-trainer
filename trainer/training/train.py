@@ -653,7 +653,8 @@ class Trainer:
         from ..data.caption_variations import CaptionVariationCache, encoder_fingerprint
         cfg = self.cfg
         default_root = Path(cfg.dataset.effective_subsets()[0].path)
-        path = cfg.train.caption_cache_path or str(default_root / "caption_variations.sqlite")
+        path = cfg.train.caption_cache_path or str(
+            default_root / "cached_text_embeddings" / "caption_variations.sqlite")
         from filelock import FileLock
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         accelerator = self.accelerator
