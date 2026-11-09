@@ -50,8 +50,12 @@ def fuse_qkv(state, *, adapter=False):
                     'method': 'block-diagonal-up/stacked-down' if adapter else 'concatenate-output-rows'}
 
 
-def separate_adapter_qkv(state):
-    """Split output rows, keeping the full rank and alpha; no lossy rank reduction."""
+def separate_adapter_qkv(state, *, compact=False):
+    """Split output rows; optionally remove exactly unused columns without approximation.
+
+    Compact splitting reverses our block-diagonal export. A dense fused adapter can
+    use every column in every projection and cannot necessarily become smaller.
+    """
     result = dict(state)
     groups = sorted({m.group() for key in state if (m := _PROJECTION.match(key))
                      and key[len(m.group()):].startswith('qkv.')})
@@ -67,7 +71,14 @@ def separate_adapter_qkv(state):
         for key in expected:
             del result[key]
         for p, part in zip(('q','k','v'), up.chunk(3,dim=0)):
-            result[prefix+p+down_key] = down.clone()
-            result[prefix+p+up_key] = part.contiguous().clone()
-            result[prefix+p+'.alpha'] = state[prefix+'qkv.alpha'].clone()
-    return result, {'joint_blocks': len(groups), 'method': 'split-output-rows/retain-full-rank'}
+            columns = part.ne(0).any(dim=0) if compact else torch.ones(down.shape[0], dtype=torch.bool, device=down.device)
+            if not columns.any():
+                columns[0] = True  # A zero update still needs valid rank-one factors.
+            rank = int(columns.sum())
+            result[prefix+p+down_key] = down[columns].contiguous().clone()
+            result[prefix+p+up_key] = part[:, columns].contiguous().clone()
+            result[prefix+p+'.alpha'] = (torch.tensor(
+                state[prefix+'qkv.alpha'].item() / down.shape[0] * rank, dtype=torch.float64
+            ) if compact else state[prefix+'qkv.alpha'].clone())
+    return result, {'joint_blocks': len(groups), 'method': ('split-output-rows/remove-zero-columns'
+                    if compact else 'split-output-rows/retain-full-rank')}

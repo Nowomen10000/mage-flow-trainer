@@ -8,15 +8,16 @@ from PySide6 import QtWidgets
 
 from trainer.gui import bridge
 from trainer.gui.app import TrainingGUI
+from trainer.gui.preferences import Preferences
 from trainer.gui.widgets import STYLESHEET
 
 
 @pytest.fixture
-def gui(monkeypatch):
+def gui(monkeypatch, tmp_path):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     app.setStyleSheet(STYLESHEET)
     monkeypatch.setattr(TrainingGUI, "_load_presets", lambda self: None)
-    window = TrainingGUI()
+    window = TrainingGUI(preferences=Preferences(tmp_path / "gui.json"))
     window._apply(bridge.defaults() | {"dataset.path": "/images"})
     yield window
     window.close()
@@ -96,7 +97,6 @@ def test_moss_checkpoint_boundary_roundtrip(gui, tmp_path):
     })
     assert gui.editors[key].widget.isEnabled()
     assert gui.tab_bar.isTabVisible(gui.experimental_tab)
-    assert not gui.experimental_chk.isEnabled()
     path = tmp_path / "checkpoint.toml"
     bridge.write_toml(path, gui.collect())
     assert load_config(path).train.moss_checkpoint_inside_compile is True
@@ -202,19 +202,19 @@ def test_live_timestep_plot_reacts_and_renders(gui):
 
 def test_experimental_visibility_preserves_active_settings(gui):
     assert not gui.tab_bar.isTabVisible(gui.experimental_tab)
-    gui.experimental_chk.setChecked(True)
+    gui.preferences.set("show_experimental", True)
+    gui._refresh()
     assert gui.tab_bar.isTabVisible(gui.experimental_tab)
     assert not gui.collect()["self_flow.enabled"]
-    gui.experimental_chk.setChecked(False)
+    gui.preferences.set("show_experimental", False)
+    gui._refresh()
     for key in ["self_flow.enabled", "flow.dual_timestep", "rti.enabled",
                 "perceptual.enabled", "adversarial.enabled"]:
         gui._apply(bridge.defaults() | {"dataset.path": "/images", key: True})
         assert gui.tab_bar.isTabVisible(gui.experimental_tab)
-        assert not gui.experimental_chk.isEnabled()
+        assert gui.preferences.values["show_experimental"] is False
         assert gui.collect()[key]
     gui._apply(bridge.defaults() | {"dataset.path": "/images"})
-    assert gui.experimental_chk.isEnabled()
-    gui.experimental_chk.setChecked(False)
     assert not gui.tab_bar.isTabVisible(gui.experimental_tab)
 
 

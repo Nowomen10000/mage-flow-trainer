@@ -173,7 +173,7 @@ class CaptionVariationCache:
         """)
         return db
 
-    def prepare(self, entries, caption_cfg, seed, count, write=True):
+    def prepare(self, entries, caption_cfg, seed, count, write=True, extra_captions=()):
         """Keep N slots, including duplicates. Increasing N preserves the old prefix."""
         self.count = count
         self.seed = seed
@@ -229,11 +229,15 @@ class CaptionVariationCache:
                 WHERE s.slot < ? AND e.caption IS NULL""",
                 (self.encoder_key, self.encoder_key, count),
             )
-            db.execute(
-                """INSERT OR IGNORE INTO pending SELECT ?, ? WHERE NOT EXISTS
-                (SELECT 1 FROM embeddings WHERE encoder=? AND caption=?)""",
-                (self.encoder_key, digest(""), self.encoder_key, digest("")),
-            )
+            # Curriculum crops use a separate trigger rather than an image caption slot.
+            for text in dict.fromkeys(("", *extra_captions)):
+                key = digest(text)
+                db.execute("INSERT OR IGNORE INTO captions VALUES (?,?)", (key, text))
+                db.execute(
+                    """INSERT OR IGNORE INTO pending SELECT ?, ? WHERE NOT EXISTS
+                    (SELECT 1 FROM embeddings WHERE encoder=? AND caption=?)""",
+                    (self.encoder_key, key, self.encoder_key, key),
+                )
             slots, unique_captions = db.execute(
                 """SELECT COUNT(*),COUNT(DISTINCT s.caption) FROM slots s
                 JOIN active a ON a.pool=s.pool WHERE s.slot<?""",

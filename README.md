@@ -150,8 +150,9 @@ peak VRAM by about **1.35 GB** in our matched 1024px batch-7 test. Both boundari
 retain the corrected RMSNorm gradients. With DDP, the default disables compiler
 partitioning at gradient buckets; DDP still synchronizes weights and gradients.
 
-The alternative boundary is under **Enable advanced experimental features →
-Experimental MOSS checkpointing → Checkpoint inside compile**. It can change
+Enable **Preferences → Enable advanced experimental settings**, then find the
+alternative boundary under **Experimental → Experimental MOSS checkpointing →
+Checkpoint inside compile**. It can change
 speed and numerical results and used more VRAM in that test. For the CLI:
 
 ```toml
@@ -289,7 +290,7 @@ caching or model loading. When they are missing, it starts Visual Studio Install
 to add English and verifies the installation before continuing. When present,
 it selects English compiler messages and proceeds normally. This check applies
 to every language; your Windows and Visual Studio UI languages stay unchanged.
-You can also repair ahead of time with **Install English C++ language pack** in
+You can also repair ahead of time with **Preferences → Install English C++ language pack** in
 the trainer, or run:
 
 ```bat
@@ -610,6 +611,36 @@ python lora_qkv_convert.py model.safetensors --format fused
 ```
 
 Running `python lora_qkv_convert.py` without arguments opens its small GUI.
+The footer's **Utils** menu opens the alpha/strength editor, MOSS Q/K/V converter,
+and LoRA rank resizer. **Console** is available in the top tab bar, while
+**Preferences** lives beside the run controls.
+
+Q/K/V conversion works in both directions. Separated output removes exactly unused
+columns, recovering the compact ranks of BluFlow's block-diagonal fused exports
+without changing their strength. Arbitrary dense fused adapters may grow when split.
+
+Rank resizing uses SVD on CPU and creates a new file. Smaller ranks approximate the
+original update and can lose detail; alpha scaling is preserved. For fused MOSS
+joint Q/K/V, the chosen rank applies to each projection, and the output is fused
+again. Plain linear LoRA and LoCon with a 1×1 up projection are supported; DoRA,
+LoKr and LoHa resizing is rejected. These commands also work outside the GUI:
+
+```bash
+python -m trainer.tools.lora_alpha_edit
+python lora_qkv_convert.py model.safetensors --format separated
+python lora_resize.py model.safetensors --rank 8
+python lora_resize.py model.safetensors --method sv_fro --threshold 0.99
+```
+
+The resize window defaults to **sv_fro**, which selects a rank per projection to
+retain the requested Frobenius norm. It uses sd-scripts' convention: `0.99` means
+at least **98.01% squared energy**, before output rounding. There is no extra rank
+cap unless enabled; existing ranks are never increased. An optional `--rank N`
+caps sv_fro ranks, and the result reports any modules that miss the target because
+of that cap. **Fixed rank** remains available; CLI calls without `--method` retain
+the original fixed-rank behavior. Retention is a weight-space measure, not a
+guarantee of visual fidelity.
+
 See the [QKV export guide](docs/moss-image-experimental.md#qkv-saving-format-and-existing-loras).
 
 **Method → Adapter → Train MOSS text-refinement adapters** controls adaptation of
@@ -715,8 +746,10 @@ BF16 source weights and frozen quantization. It does not support full finetuning
 or other adapter algorithms. Install the optional `convrot` dependencies to use it;
 see the [MOSS guide](docs/moss-image-experimental.md) for restrictions.
 
-The GUI's **Enable advanced experimental features** toggle reveals research controls;
-it does not enable their losses. **Self-Flow, dual-timestep noising, RTI, decoded
+The GUI's **Preferences → Enable advanced experimental settings** toggle reveals
+research controls and is remembered across launches; it does not enable their losses.
+Configs with active experiments always reveal their controls regardless of this preference.
+**Self-Flow, dual-timestep noising, RTI, decoded
 perceptual/eye LPIPS, and eye adversarial loss are not supported for MOSS.**
 Their separate Mage workflows are described in the [Self-Flow](docs/self-flow-training.md),
 [decoded-loss](docs/decoded-perceptual-loss.md), and

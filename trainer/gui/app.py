@@ -270,24 +270,17 @@ class TrainingGUI(QtWidgets.QWidget):
         nav_lay.addStretch(1)
         nav_lay.addWidget(make_label("config", color=THEME.text_muted))
         self.preset_combo = SearchableComboBox()
-        self.preset_combo.setMinimumWidth(240)
+        self.preset_combo.setMinimumWidth(180)
+        self.preset_combo.setMaximumWidth(260)
+        self.preset_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.preset_combo.setMinimumContentsLength(20)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         nav_lay.addWidget(self.preset_combo)
         nav_lay.addWidget(make_btn("Open", self._open))
         nav_lay.addWidget(make_btn("Save", self._save))
         nav_lay.addWidget(make_btn("Save As", self._save_as))
         nav_lay.addWidget(make_btn("Reload", self._reload))
-        nav_lay.addWidget(make_btn("Preferences", self._preferences_dialog))
         main.addWidget(nav, 0)
-
-        self.experimental_chk = QtWidgets.QCheckBox("Enable advanced experimental features")
-        self.experimental_chk.setToolTip(
-            "Show Self-Flow, dual timestep, RTI, decoded perceptual, eye adversarial and "
-            "MOSS checkpoint-boundary controls. "
-            "Individual features remain off until enabled. Active features must be disabled "
-            "before hiding their controls."
-        )
-        main.addWidget(self.experimental_chk, 0)
 
         frame = QtWidgets.QFrame()
         set_role(frame, "mainFrame")
@@ -312,8 +305,8 @@ class TrainingGUI(QtWidgets.QWidget):
 
         self.experimental_tab = self.tab_bar.addTab("Experimental")
         self.stack.addWidget(self._build_page(experimental_groups))
-        self.tab_bar.setTabVisible(self.experimental_tab, False)
-        self.experimental_chk.toggled.connect(self._show_experimental)
+        self.tab_bar.setTabVisible(
+            self.experimental_tab, bool(self.preferences.values.get("show_experimental", False)))
 
         self.run_queue = RunQueueWidget()
         self.run_queue.startRequested.connect(self._start_queue)
@@ -321,7 +314,7 @@ class TrainingGUI(QtWidgets.QWidget):
         self.stack.addWidget(self.run_queue)
 
         self.metrics = LiveMetricsWidget()
-        self.tab_bar.addTab("Live Metrics")
+        self.metrics_tab = self.tab_bar.addTab("Live Metrics")
         self.stack.addWidget(self.metrics)
 
         console_page = QtWidgets.QWidget()
@@ -329,13 +322,24 @@ class TrainingGUI(QtWidgets.QWidget):
         cl.setContentsMargins(12, 12, 12, 12)
         self.console = VirtualConsoleWidget(visible_lines=900)
         cl.addWidget(self.console, 1)
-        self.tab_bar.addTab("Console")
+        self.console_tab = self.tab_bar.addTab("Console")
         self.stack.addWidget(console_page)
 
         self.tab_bar.currentChanged.connect(self.stack.setCurrentIndex)
         main.addWidget(frame, 1)
         main.addWidget(self._build_footer(), 0)
         self.tab_bar.currentChanged.connect(self._refresh)
+
+    def _show_console(self):
+        self.tab_bar.setCurrentIndex(self.console_tab)
+
+    def _launch_utility(self, module):
+        # Separate processes keep CPU-intensive SVD and utility dialogs independent
+        # of training, queue handling and the main GUI's event loop.
+        started, _ = QtCore.QProcess.startDetached(
+            sys.executable, ["-m", module], str(PROJECT_ROOT))
+        if not started:
+            QtWidgets.QMessageBox.warning(self, "Could not open utility", f"Failed to launch {module}")
 
     def _show_experimental(self, enabled):
         if not enabled and self.tab_bar.currentIndex() == self.experimental_tab:
@@ -461,9 +465,6 @@ class TrainingGUI(QtWidgets.QWidget):
                                              self._use_windows_attention)
         self.windows_attention_btn.hide()
         lay.addWidget(self.windows_attention_btn)
-        if sys.platform == "win32":
-            lay.addWidget(make_btn("Install English C++ language pack", self._install_cpp_english))
-
         # Advisories sit below the status line and above the controls, because several of them are
         # about the GPU checkboxes right underneath -- the two worst traps are only visible once
         # the process count is known, which the config file cannot express.
@@ -539,6 +540,19 @@ class TrainingGUI(QtWidgets.QWidget):
             "Any step failing cancels the rest -- a merge missing a parent looks fine and is not.")
         self.pipeline_chk.toggled.connect(self._refresh)
         self.pipeline_chk.hide()
+        self.preferences_btn = make_btn("Preferences", self._preferences_dialog)
+        row.addWidget(self.preferences_btn)
+        self.utils_btn = QtWidgets.QPushButton("Utils")
+        self.utils_menu = QtWidgets.QMenu(self.utils_btn)
+        for label, module in (
+            ("Edit LoRA alpha / strength…", "trainer.tools.lora_alpha_edit"),
+            ("Convert MOSS Q/K/V: fused ↔ separated…", "trainer.tools.lora_qkv_convert"),
+            ("Resize LoRA rank (SVD)…", "trainer.tools.lora_resize"),
+        ):
+            action = self.utils_menu.addAction(label)
+            action.triggered.connect(lambda checked=False, m=module: self._launch_utility(m))
+        self.utils_btn.setMenu(self.utils_menu)
+        row.addWidget(self.utils_btn)
         self.add_queue_btn = make_btn("Save && add to queue", self._save_to_queue)
         self.add_queue_btn.setToolTip("Validate and save these settings, then add a separate snapshot to the queue. Works while training and with Autosave off.")
         row.addWidget(self.add_queue_btn)
@@ -636,6 +650,15 @@ class TrainingGUI(QtWidgets.QWidget):
         row.addWidget(make_btn("Browse", browse))
         row.addWidget(make_btn("Use default", folder.clear))
         layout.addLayout(row)
+        experimental = QtWidgets.QCheckBox("Enable advanced experimental settings")
+        experimental.setObjectName("show_experimental")
+        experimental.setChecked(bool(self.preferences.values.get("show_experimental", False)))
+        layout.addWidget(experimental)
+        experimental_help = QtWidgets.QLabel(
+            "Show the Experimental tab by default. This does not enable individual training features. "
+            "Configs with active experiments always show their controls, even when this preference is off.")
+        experimental_help.setWordWrap(True)
+        layout.addWidget(experimental_help)
         allocator = None
         if sys.platform == "win32":
             layout.addWidget(QtWidgets.QLabel("CUDA memory allocator:"))
@@ -655,6 +678,7 @@ class TrainingGUI(QtWidgets.QWidget):
                 "running jobs are unchanged.")
             help_text.setWordWrap(True)
             layout.addWidget(help_text)
+            layout.addWidget(make_btn("Install English C++ language pack", self._install_cpp_english))
         info = QtWidgets.QLabel(f"Remembered for future launches in:\n{self.preferences.path}\nExisting TOMLs are not moved.")
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -664,6 +688,8 @@ class TrainingGUI(QtWidgets.QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted and self._set_config_dir(folder.text().strip()):
+            self._save_preference("show_experimental", experimental.isChecked())
+            self._refresh()
             if allocator is not None:
                 self._save_preference("windows_allocator", allocator.currentData())
             if self._current_path is not None:
@@ -986,9 +1012,8 @@ class TrainingGUI(QtWidgets.QWidget):
             "perceptual.enabled", "adversarial.enabled",
             "train.moss_checkpoint_inside_compile",
         ))
-        if active_experiment:
-            self.experimental_chk.setChecked(True)
-        self.experimental_chk.setEnabled(not active_experiment)
+        self._show_experimental(
+            active_experiment or bool(self.preferences.values.get("show_experimental", False)))
         from ..training.quant import QUANT_PRESETS
         locked_quant = {f"quant.{key}" for key in QUANT_PRESETS.get(flat.get("quant.preset"), {})}
         for key, rule in _RULES.items():
@@ -1133,7 +1158,10 @@ class TrainingGUI(QtWidgets.QWidget):
         self.runner.metricsSignal.connect(self._handle_metrics)
         self.runner.finishedSignal.connect(self._finished)
         self.log("\n" + "=" * 60 + f"\n{launch.label}\n" + " ".join(launch.argv) + "\n" + "=" * 60)
-        self.tab_bar.setCurrentIndex(self.tab_bar.count() - (2 if training else 1))
+        if training:
+            self.tab_bar.setCurrentIndex(self.metrics_tab)
+        else:
+            self._show_console()
         if training:
             self._metrics_snapshot_saved = False
             self.metrics.start_run()

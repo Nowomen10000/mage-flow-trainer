@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import tempfile
+import tomllib
 from pathlib import Path
 
 import toml
@@ -207,7 +208,8 @@ def prune_defaults(flat: dict) -> dict:
 
 
 def read_toml(path: str | Path) -> dict:
-    return toml.loads(Path(path).read_text(encoding="utf-8"))
+    # Match the trainer's parser, including nested arrays inside inline tables.
+    return tomllib.loads(Path(path).read_text(encoding="utf-8"))
 
 
 class _Inline(dict, toml.decoder.InlineTableDict):
@@ -225,7 +227,7 @@ def _mark_inline(nested: dict) -> dict:
     for key, value in nested.items():
         if isinstance(value, dict) and value and not any(
             isinstance(v, dict) for v in value.values()
-        ) and key not in SECTIONS and key != "caption":
+        ) and key not in SECTIONS and key not in ("caption", "texture"):
             out[key] = _Inline({str(k): v for k, v in value.items()})
         elif isinstance(value, dict):
             out[key] = _mark_inline(value)

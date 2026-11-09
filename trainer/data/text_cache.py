@@ -23,10 +23,6 @@ def validate_static_captions(cfg):
             "cache_text_embeddings requires fixed captions; disable "
             + ", ".join(changing)
         )
-    if any(p.mode == "texture" for p in cfg.curriculum.phases):
-        raise ValueError(
-            "cache_text_embeddings currently does not support texture curricula"
-        )
     if cfg.preserve.enabled:
         raise ValueError(
             "cache_text_embeddings currently does not support preservation probes"

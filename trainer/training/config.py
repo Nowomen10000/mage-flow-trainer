@@ -451,8 +451,10 @@ def validate_model_options(cfg):
     if cfg.train.model_family in ('flux3', 'moss_image'):
         cfg.train.flux2_vae = True
         if (cfg.flow.dual_timestep or cfg.self_flow.enabled or cfg.rti.enabled or
-            cfg.perceptual.enabled or cfg.adversarial.enabled or cfg.preserve.enabled or cfg.curriculum.phases):
-            raise ValueError('Flux3/MOSS supports text-to-image flow training without RTI, Self-Flow, dual timestep, decoded losses or curricula')
+            cfg.perceptual.enabled or cfg.adversarial.enabled or cfg.preserve.enabled):
+            raise ValueError('Flux3/MOSS supports text-to-image flow training without RTI, Self-Flow, dual timestep or decoded losses')
+        if cfg.train.model_family == 'flux3' and cfg.curriculum.phases:
+            raise ValueError('Flux3 does not support curricula')
         backends = ('sdpa', 'torch_varlen', 'flash_attn_2') if cfg.train.model_family == 'moss_image' else ('sdpa', 'torch_varlen')
         if cfg.train.attention_backend not in backends or cfg.train.checkpoint_blocks is not None:
             raise ValueError('Flux3/MOSS requires SDPA or torch_varlen (also flash_attn_2 for MOSS) and all-block checkpointing')

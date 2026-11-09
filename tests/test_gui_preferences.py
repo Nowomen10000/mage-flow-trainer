@@ -59,6 +59,48 @@ def test_invalid_preferences_use_defaults(tmp_path):
         assert Preferences(path).values == {}
 
 
+def test_experimental_preference_save_cancel_and_restart(gui, monkeypatch):
+    before = gui.collect()
+    assert not gui.tab_bar.isTabVisible(gui.experimental_tab)
+
+    def choose(dialog, *, accepted=True):
+        checkbox = dialog.findChild(QtWidgets.QCheckBox, "show_experimental")
+        assert not checkbox.isChecked()
+        checkbox.setChecked(True)
+        return (QtWidgets.QDialog.DialogCode.Accepted if accepted
+                else QtWidgets.QDialog.DialogCode.Rejected)
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", lambda d: choose(d, accepted=False))
+    gui._preferences_dialog()
+    assert not gui.tab_bar.isTabVisible(gui.experimental_tab)
+    assert not gui.preferences.path.exists()
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", choose)
+    gui._preferences_dialog()
+    assert gui.tab_bar.isTabVisible(gui.experimental_tab)
+    assert Preferences(gui.preferences.path).values["show_experimental"] is True
+    assert gui.collect() == before
+    other = gui_module.TrainingGUI(preferences=Preferences(gui.preferences.path))
+    try:
+        assert other.tab_bar.isTabVisible(other.experimental_tab)
+    finally:
+        other.close()
+
+    def disable(dialog):
+        checkbox = dialog.findChild(QtWidgets.QCheckBox, "show_experimental")
+        assert checkbox.isChecked()
+        checkbox.setChecked(False)
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    gui.tab_bar.setCurrentIndex(gui.experimental_tab)
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", disable)
+    gui._preferences_dialog()
+    assert not gui.tab_bar.isTabVisible(gui.experimental_tab)
+    assert gui.tab_bar.currentIndex() == 0
+    assert Preferences(gui.preferences.path).values["show_experimental"] is False
+    assert gui.collect() == before
+
+
 def test_picker_mtime_order_with_external_file_and_preserved_selection(gui, tmp_path):
     gui.config_dir.mkdir()
     paths = [gui.config_dir / "a-old.toml", gui.config_dir / "z-new.toml", tmp_path / "external.toml"]

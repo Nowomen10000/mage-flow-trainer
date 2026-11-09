@@ -349,8 +349,6 @@ class Trainer:
                 drop_last=False,
                 seed=cfg.train.seed,
             )
-            if cfg.curriculum:
-                self.sampler.set_curriculum(cfg.curriculum, cfg.train.epochs, cfg.dataset.texture)
             self.loader = DataLoader(
                 self.dataset,
                 batch_sampler=self.sampler,
@@ -373,6 +371,13 @@ class Trainer:
             self.total_batches = total_batches
             self.total_steps = cfg.train.max_steps or steps_per_epoch * cfg.train.epochs
             self.steps_per_epoch = steps_per_epoch
+            if cfg.curriculum:
+                self.sampler.set_curriculum(
+                    cfg.curriculum, cfg.train.epochs, cfg.dataset.texture,
+                    total_steps=self.total_steps,
+                    gradient_accumulation_steps=cfg.train.gradient_accumulation_steps,
+                    num_processes=self.accelerator.num_processes,
+                )
 
         # Progress display. The bar is main-process-only: under DDP every rank runs this loop, and
         # N ranks writing \r to the same terminal is unreadable.
@@ -609,6 +614,8 @@ class Trainer:
             return self._build_variation_cache()
         captions = sorted({build_caption(e.tags, e.nl, cfg.dataset.caption, random.Random(0))
                            for e in self.dataset.entries})
+        if any(p.mode == "texture" for p in cfg.curriculum.phases):
+            captions = sorted(set(captions) | {cfg.dataset.texture.trigger})
         if not captions:
             raise ValueError("No captions available for text embedding caching")
         components = load_components(cfg.train.model_path, self.dtype, **model_load_kwargs(cfg.train),
@@ -660,7 +667,9 @@ class Trainer:
             cache = CaptionVariationCache(path, key[0])
             if accelerator.is_main_process:
                 cache.prepare(self.dataset.entries, cfg.dataset.caption, cfg.train.seed,
-                              cfg.train.caption_variations)
+                              cfg.train.caption_variations,
+                              extra_captions=([cfg.dataset.texture.trigger] if any(
+                                  p.mode == "texture" for p in cfg.curriculum.phases) else []))
                 self.accelerator.print(f"caption cache {cache.statistics}")
             accelerator.wait_for_everyone()
             if not accelerator.is_main_process:

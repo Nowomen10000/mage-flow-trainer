@@ -790,30 +790,37 @@ class BucketBatchSampler(Sampler[list[int]]):
         # same behaviour sd-scripts relies on.
         return batches
 
-    def set_curriculum(self, curriculum, total_epochs: int, texture=None) -> None:
+    def set_curriculum(self, curriculum, total_epochs: int, texture=None, *,
+                       total_steps: int | None = None, gradient_accumulation_steps: int = 1,
+                       num_processes: int = 1) -> None:
         """Let the sampler resolve the curriculum phase for each batch it emits.
 
         The phase has to reach `__getitem__`, and `__getitem__` runs in forked workers that
         prefetch ahead -- so setting a flag on the dataset from the training loop would arrive
         late by however deep the prefetch queue is (8 workers x prefetch 2 is ~16 batches, about 4
         optimizer steps at accum 4, against 5%-of-run phases only ~21 steps long). Resolving here
-        instead is exact: the sampler runs in the main process and knows its own batch ordering,
-        and `batches_consumed / total_batches` is *identically* the trainer's
-        `global_step / total_steps` -- both divide out accumulation and world size. So the mode the
-        dataset used and the t_range the trainer applied always come from the same phase, with no
-        shared state and no cross-rank communication.
+        instead uses the optimizer-step ordinal, with the same total-step budget as the trainer.
+        Accumulation groups share a phase, including a partial group at the end of an epoch.
+        An explicit max_steps must override the epoch-derived budget for BOTH crop selection and
+        timestep/LR selection. Texture curricula remain single-GPU by default.
         """
         from .texture import TextureConfig
         self.curriculum = curriculum
         self.total_epochs = max(1, total_epochs)
         self.texture = texture or TextureConfig()
+        self.curriculum_batches_per_step = max(1, gradient_accumulation_steps * num_processes)
+        batches = len(self._batches())
+        self.curriculum_steps_per_epoch = (
+            batches + self.curriculum_batches_per_step - 1) // self.curriculum_batches_per_step
+        self.curriculum_total_steps = max(
+            1, total_steps if total_steps is not None else self.curriculum_steps_per_epoch * self.total_epochs)
 
     def _phase_for(self, batch_ordinal: int) -> object | None:
         if not getattr(self, "curriculum", None):
             return None
-        total = max(1, len(self._batches()) * self.total_epochs)
-        consumed = self.epoch * len(self._batches()) + batch_ordinal
-        return self.curriculum.resolve(consumed / total)
+        step = (self.epoch * self.curriculum_steps_per_epoch
+                + batch_ordinal // self.curriculum_batches_per_step)
+        return self.curriculum.resolve(step / self.curriculum_total_steps)
 
     def __iter__(self):
         # (index, epoch, phase, canvas): the dataset needs the epoch to seed its caption RNG, the

@@ -135,7 +135,9 @@ def test_standalone_conversion_roundtrip_and_no_overwrite(tmp_path,naming):
     for p in ('q','k','v'):
         target=naming+p
         expected=(state[target+'.lora_up.weight'].double()@state[target+'.lora_down.weight'].double())*(state[target+'.alpha'].item()/2)
-        actual=(restored[target+'.lora_up.weight'].double()@restored[target+'.lora_down.weight'].double())*(restored[target+'.alpha'].item()/6)
+        restored_rank = restored[target+'.lora_down.weight'].shape[0]
+        assert restored_rank == 2
+        actual=(restored[target+'.lora_up.weight'].double()@restored[target+'.lora_down.weight'].double())*(restored[target+'.alpha'].item()/restored_rank)
         torch.testing.assert_close(actual,expected,rtol=1e-12,atol=1e-12)
     assert hashlib.sha256(source.read_bytes()).hexdigest()==digest
     with safe_open(separated,framework='pt') as f:
