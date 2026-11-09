@@ -36,6 +36,7 @@ def test_console_tab_footer_preferences_and_utility_launches(monkeypatch, tmp_pa
             ['-m', 'trainer.tools.lora_alpha_edit'],
             ['-m', 'trainer.tools.lora_qkv_convert'],
             ['-m', 'trainer.tools.lora_resize'],
+            ['-m', 'trainer.tools.recover_config'],
         ]
     finally:
         window.close(); window.deleteLater(); app.processEvents()

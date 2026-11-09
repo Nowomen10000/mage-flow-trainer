@@ -548,6 +548,7 @@ class TrainingGUI(QtWidgets.QWidget):
             ("Edit LoRA alpha / strength…", "trainer.tools.lora_alpha_edit"),
             ("Convert MOSS Q/K/V: fused ↔ separated…", "trainer.tools.lora_qkv_convert"),
             ("Resize LoRA rank (SVD)…", "trainer.tools.lora_resize"),
+            ("Recover training TOML from checkpoint…", "trainer.tools.recover_config"),
         ):
             action = self.utils_menu.addAction(label)
             action.triggered.connect(lambda checked=False, m=module: self._launch_utility(m))

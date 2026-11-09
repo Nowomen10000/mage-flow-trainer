@@ -612,7 +612,7 @@ python lora_qkv_convert.py model.safetensors --format fused
 
 Running `python lora_qkv_convert.py` without arguments opens its small GUI.
 The footer's **Utils** menu opens the alpha/strength editor, MOSS Q/K/V converter,
-and LoRA rank resizer. **Console** is available in the top tab bar, while
+LoRA rank resizer, and training TOML recovery. **Console** is available in the top tab bar, while
 **Preferences** lives beside the run controls.
 
 Q/K/V conversion works in both directions. Separated output removes exactly unused
@@ -640,6 +640,23 @@ caps sv_fro ranks, and the result reports any modules that miss the target becau
 of that cap. **Fixed rank** remains available; CLI calls without `--method` retain
 the original fixed-rank behavior. Retention is a weight-space measure, not a
 guarantee of visual fidelity.
+
+**Utils → Recover training TOML from checkpoint** reads BluFlow's embedded
+`training_config` without loading weights. It restores the original recipe,
+including texture curriculum phases, crop settings, captions and dataset subsets.
+Saved defaults are retained, resume instructions are cleared, and existing files
+are never overwritten. Open the recovered TOML in the trainer and review local
+model/dataset paths, output naming and GPU selection before starting a fresh run.
+The CLI equivalent is:
+
+```bash
+python -m trainer.tools.recover_config adapter.safetensors -o recovered.toml
+```
+
+Files without readable BluFlow training metadata cannot recover a complete recipe.
+Settings from edited adapters describe their original training, not necessarily
+their current rank or strength. Unknown or incompatible settings are preserved
+and reported for review; optimizer state and dataset files are not recovered.
 
 See the [QKV export guide](docs/moss-image-experimental.md#qkv-saving-format-and-existing-loras).
 
