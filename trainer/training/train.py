@@ -469,6 +469,7 @@ class Trainer:
                 cfg.component_lr,
                 default_lr=cfg.optimizer.lr,
                 weight_decay=cfg.optimizer.weight_decay,
+                block_lr=cfg.block_lr,
             )
             groups = self.param_report.groups
         else:
@@ -1349,6 +1350,8 @@ class Trainer:
         print(f"params   {trainable / 1e6:.2f}M trainable / {total / 1e6:.2f}M total")
         if self.param_report is not None:
             print(self.param_report.summary())
+        if cfg.block_lr.enabled:
+            print(cfg.block_lr.summary())
         if self.quant_info is not None:
             nq, ntotal, use_qmm, max_tokens, wmean = self.quant_info
             how = "auto" if cfg.quant.use_quantized_matmul == "auto" else "explicit"
@@ -1508,6 +1511,7 @@ class Trainer:
             if isinstance(batch_size, dict) else batch_size * batch_scale
         )
         runtime = optimizer_snapshot(self.optimizer)
+        runtime['block_lr_multipliers'] = cfg.block_lr.expanded()
         timing = self.timing.snapshot()
         runtime.update(timing)
         if cfg.resolution_schedule.enabled:
@@ -1541,6 +1545,7 @@ class Trainer:
                             "adapter_initialization": getattr(self, "adapter_initialization", None),
                             "training_timing": timing,
                             "flow_rng_version": self.flow_rng.version,
+                            "block_lr_multipliers": cfg.block_lr.expanded(),
                             "resolution_schedule_state": self._resolution_state()}, indent=2)
             )
         _emit(self, f"saved {written} ({n} tensors)")
@@ -1660,6 +1665,7 @@ class Trainer:
                 f"save_full_state disabled, so it can be used for inference but not resumed."
             )
         saved_state = json.loads(state_file.read_text())
+        self.cfg.block_lr.check_resume(saved_state.get('block_lr_multipliers'))
         staged = saved_state.get('resolution_schedule_state')
         if bool(staged) != self.cfg.resolution_schedule.enabled:
             raise ValueError('Full-state resume must preserve staged-resolution mode; use weights-only to start a new plan')

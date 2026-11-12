@@ -25,6 +25,7 @@ from pathlib import Path
 import toml
 
 from ..training.resolution_schedule import ResolutionSchedule
+from ..training.block_lr import BlockLRConfig
 from ..training.optimizer_specs import OPTIMIZERS, optimizer_defaults
 
 from ..data.caption import CaptionConfig
@@ -62,6 +63,7 @@ SECTIONS: dict[str, type] = {
     "preserve": PreserveConfig,
     "quant": QuantConfig,
     "component_lr": ComponentLRs,
+    "block_lr": BlockLRConfig,
     "rti": RTIConfig,
     "self_flow": SelfFlowConfig,
     "perceptual": PerceptualConfig,

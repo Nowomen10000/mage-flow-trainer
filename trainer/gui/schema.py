@@ -669,6 +669,16 @@ SPEC: dict[str, Spec] = {
     "schedule.num_segments": _spec(
         "ReREX segments", "Number of recursive segments.", lambda: F.IntEditor(1, 64)),
 
+    "block_lr.enabled": _spec(
+        "MOSS block learning rates",
+        "Experimental PEFT LoRA / LyCORIS LoCon training multipliers for joint blocks 0–41. "
+        "Does not change rank, alpha, or inference strength. Disabled preserves the usual LR.",
+        lambda: F.BoolEditor("Enable MOSS block LR multipliers"), inline_label=True),
+    "block_lr.ranges": _spec(
+        "Block ranges",
+        "Inclusive zero-based ranges. Unlisted blocks inherit x1.0. Text-refiner adapters are unaffected. "
+        "Changing multipliers requires a fresh run or weights-only resume.",
+        F.BlockLRRangesEditor),
     "component_lr.adaln": _spec(
         "Train AdaLN",
         "Full finetuning only. Enabled by default; disable to freeze AdaLN modulation and timestep projections. "
@@ -869,6 +879,7 @@ LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
             "schedule.d", "schedule.global_d", "schedule.local_d", "schedule.weight_power",
             "schedule.num_segments",
         ]),
+        ("Experimental MOSS block learning rates", ["block_lr.enabled", "block_lr.ranges"]),
     ]),
     ("Method", [
         ("Adapter", [

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
+from .block_lr import BlockLRConfig
+
 _COMPONENT_PATTERNS = [
     ("rti", re.compile(r"^region_interface\.")),
     ("adaln", re.compile(r"^transformer_blocks\.\d+\.(img_mod|txt_mod)\.")),
@@ -126,8 +128,9 @@ class ParamGroupReport:
             n_train, n_frozen = self.counts.get(c, 0), self.frozen.get(c, 0)
             if not (n_train or n_frozen):
                 continue
-            lr = next((g["lr"] for g in self.groups if g["component"] == c), 0.0)
-            state = f"lr={lr:.2e}" if n_train else "FROZEN"
+            rates = sorted({g['lr'] for g in self.groups if g['component'] == c})
+            state = ('FROZEN' if not n_train else f'lr={rates[0]:.2e}' if len(rates) == 1
+                     else f'lr={rates[0]:.2e}..{rates[-1]:.2e}')
             lines.append(
                 f"  {c:<12} {n_train / 1e6:8.2f}M trainable  {n_frozen / 1e6:8.2f}M frozen  {state}"
             )
@@ -190,6 +193,7 @@ def build_adapter_param_groups(
     lrs: ComponentLRs,
     default_lr: float,
     weight_decay: float = 0.0,
+    block_lr: BlockLRConfig | None = None,
 ) -> ParamGroupReport:
     """The LoRA counterpart of `build_param_groups`: split the *adapter* tensors by the component
     of the base module they wrap.
@@ -199,34 +203,41 @@ def build_adapter_param_groups(
     though dropping it from `adapter.components` is better: that skips injecting the adapter at all
     rather than carrying dead zero tensors into the export.
     """
-    buckets: dict[str, list[torch.nn.Parameter]] = {c: [] for c in COMPONENTS}
+    multipliers = (block_lr or BlockLRConfig()).expanded()
+    buckets: dict[tuple[str, float], list[torch.nn.Parameter]] = {}
     counts: dict[str, int] = {}
     frozen: dict[str, int] = {}
 
-    named: list[tuple[str, torch.nn.Parameter]] = [
-        (classify(n), p) for n, p in transformer.named_parameters() if p.requires_grad
-    ]
-    for component, param in named:
-        if lrs.resolve(component, default_lr) == 0.0:
+    for name, param in transformer.named_parameters():
+        if not param.requires_grad:
+            continue
+        component = classify(name)
+        match = re.match(r'^layers\.(\d+)\.', name)
+        # PEFT and LyCORIS adapters retain their base module's qualified name.
+        # Text-refiner blocks live under text_embedder.blocks and are unaffected.
+        multiplier = multipliers[int(match[1])] if match and block_lr and block_lr.enabled else 1.0
+        if lrs.resolve(component, default_lr) * multiplier == 0.0:
             param.requires_grad_(False)
             frozen[component] = frozen.get(component, 0) + param.numel()
             continue
-        buckets[component].append(param)
+        buckets.setdefault((component, multiplier), []).append(param)
         counts[component] = counts.get(component, 0) + param.numel()
 
     groups = [
         {
             "params": params,
-            "lr": lrs.resolve(component, default_lr),
+            "lr": lrs.resolve(component, default_lr) * multiplier,
             "weight_decay": 0.0 if component == "rti" else weight_decay,
             "component": component,
+            "block_lr_mul": multiplier,
         }
-        for component, params in buckets.items()
+        for (component, multiplier), params in sorted(
+            buckets.items(), key=lambda item: (COMPONENTS.index(item[0][0]), item[0][1]))
         if params
     ]
     if not groups:
         raise ValueError(
-            "every adapter component is frozen by component_lr; nothing to train"
+            "every adapter component is frozen by component_lr/block_lr; nothing to train"
         )
     return ParamGroupReport(groups=groups, counts=counts, frozen=frozen)
 

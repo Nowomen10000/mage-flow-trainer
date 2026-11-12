@@ -935,6 +935,71 @@ class SubsetEditor(_Blockable):
                            sub.get("texture", True), i)
 
 
+class BlockLRRangesEditor(_Blockable):
+    """Inclusive MOSS block ranges; untouched ranges inherit multiplier one."""
+    def __init__(self):
+        box = QtWidgets.QWidget()
+        super().__init__(box)
+        layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QtWidgets.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(['First block (0–41)', 'Last block (inclusive)', 'LR multiplier'])
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.setMinimumHeight(160)
+        layout.addWidget(self.table)
+        buttons = QtWidgets.QHBoxLayout()
+        for label, callback in [('Add range', self._add), ('Remove selected', self._remove)]:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        note = QtWidgets.QLabel(
+            '0.75 = 25% lower LR; 1.5 = 50% higher LR; 0 freezes that range. '
+            'Ranges must not overlap. Unlisted blocks stay at 1.0. '
+            'Multiplies the component LR, scheduler and stage/curriculum LR; '
+            'text-refiner adapters are unchanged. This changes training, not inference strength.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+    def _add(self, *_):
+        ranges = self.get()
+        covered = {i for row in ranges for i in range(row['start'], row['end'] + 1)}
+        remaining = sorted(set(range(42)) - covered)
+        if remaining:
+            self.set(ranges + [dict(start=remaining[0], end=remaining[0], lr_mul=1.0)])
+            self._emit()
+
+    def _remove(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+            self._emit()
+
+    def _set(self, value):
+        self.table.setRowCount(0)
+        for entry in value or []:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col, key in enumerate(('start', 'end', 'lr_mul')):
+                editor = NoScrollSpinBox() if col < 2 else NoScrollDoubleSpinBox()
+                editor.setLocale(QtCore.QLocale.c())
+                # Broad widget ranges preserve invalid TOMLs for loader validation
+                # rather than silently clamping a loaded range into a different plan.
+                editor.setRange(-1000000, 1000000)
+                if col == 2:
+                    editor.setDecimals(6)
+                    editor.setSingleStep(.05)
+                editor.setValue(entry[key])
+                self.table.setCellWidget(row, col, editor)
+                editor.valueChanged.connect(self._emit)
+
+    def get(self):
+        return [dict(start=self.table.cellWidget(row, 0).value(),
+                     end=self.table.cellWidget(row, 1).value(),
+                     lr_mul=self.table.cellWidget(row, 2).value())
+                for row in range(self.table.rowCount())]
+
+
 class ResolutionStagesEditor(_Blockable):
     """Stage shares plus a read-only preview of batches and resolved update counts."""
     def __init__(self):

@@ -158,6 +158,10 @@ _RULES = {
     "adapter.dtype": lambda c: c.get("adapter.kind") != "none",
     "adapter.moss_train_text_refiner": lambda c: (c.get("train.model_family") in ("auto", "moss_image")
         and c.get("adapter.kind") != "none"),
+    "block_lr.enabled": lambda c: bool(c.get('block_lr.enabled')) or (c.get("train.model_family") in ("auto", "moss_image") and (
+        c.get("adapter.kind") == "lora" or (c.get("adapter.kind") == "lycoris_lora"
+                                           and c.get("adapter.lycoris_algo") == "locon"))),
+    "block_lr.ranges": lambda c: bool(c.get("block_lr.enabled")),
     "adapter.rank": lambda c: c.get("adapter.kind") != "none",
     "adapter.alpha": lambda c: c.get("adapter.kind") != "none",
     "adapter.dropout": lambda c: c.get("adapter.kind") != "none",
@@ -1012,6 +1016,7 @@ class TrainingGUI(QtWidgets.QWidget):
             "self_flow.enabled", "flow.dual_timestep", "rti.enabled",
             "perceptual.enabled", "adversarial.enabled",
             "train.moss_checkpoint_inside_compile",
+            "block_lr.enabled",
         ))
         self._show_experimental(
             active_experiment or bool(self.preferences.values.get("show_experimental", False)))

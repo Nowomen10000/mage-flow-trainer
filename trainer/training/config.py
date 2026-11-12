@@ -17,6 +17,7 @@ from ..data.texture import TextureConfig
 from .curriculum import Curriculum, Phase
 from .flow import FlowConfig
 from .params import AdapterConfig, ComponentLRs
+from .block_lr import BlockLRConfig
 from .preserve import PreserveConfig
 from .perceptual import PerceptualConfig
 from .eye_adversarial import EyeAdversarialConfig
@@ -346,6 +347,7 @@ class Config:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     component_lr: ComponentLRs = field(default_factory=ComponentLRs)
+    block_lr: BlockLRConfig = field(default_factory=BlockLRConfig)
     adapter: AdapterConfig = field(default_factory=AdapterConfig)
     quant: QuantConfig = field(default_factory=QuantConfig)
     preserve: PreserveConfig = field(default_factory=PreserveConfig)
@@ -373,6 +375,7 @@ _SECTIONS = {
     "optimizer": OptimizerConfig,
     "schedule": ScheduleConfig,
     "component_lr": ComponentLRs,
+    "block_lr": BlockLRConfig,
     "adapter": AdapterConfig,
     "quant": QuantConfig,
     "preserve": PreserveConfig,
@@ -411,6 +414,10 @@ def validate_model_options(cfg):
         raise ValueError('Eye adversarial experiment requires dedicated eye examples and perceptual.weight=0 (LPIPS off)')
     from ..modeling.loader import resolve_model_family
     cfg.train.model_family = resolve_model_family(cfg.train.model_path, cfg.train.model_family)
+    if cfg.block_lr.enabled and (cfg.train.model_family != 'moss_image' or not (
+            cfg.adapter.kind == 'lora' or (cfg.adapter.kind == 'lycoris_lora'
+                                         and cfg.adapter.lycoris_algo == 'locon'))):
+        raise ValueError('Experimental block LR requires MOSS PEFT LoRA or LyCORIS LoCon training')
     if cfg.train.moss_checkpoint_inside_compile and cfg.train.model_family != "moss_image":
         raise ValueError("train.moss_checkpoint_inside_compile requires MOSS-Image")
     if cfg.quant.preset != "custom" and (

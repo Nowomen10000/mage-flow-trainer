@@ -124,7 +124,8 @@ class CheckpointMetadataTests(unittest.TestCase):
                 trainer.source_checkpoint = {'name': 'current-init.safetensors', 'md5': 'init-hash'}
                 trainer.accelerator = SimpleNamespace(load_state=lambda path: None,
                                                       print=lambda *args: None)
-                trainer.cfg = SimpleNamespace(train=SimpleNamespace(gradient_accumulation_steps=1))
+                trainer.cfg = Config(dataset=DatasetConfig(path='/example/dataset'))
+                trainer.cfg.train.gradient_accumulation_steps = 1
                 trainer.steps_per_epoch = 10
                 trainer._resume(folder)
                 self.assertFalse(trainer.timing.history_complete)

@@ -12,7 +12,7 @@ from .optimizer_specs import OPTIMIZERS
 # SDNQ optimizers assert that a param group's keys match their schema exactly, so our bookkeeping
 # key has to come off first. Stock torch optimizers tolerate it, but stripping unconditionally
 # keeps the two paths from diverging.
-_BOOKKEEPING_KEYS = ("component",)
+_BOOKKEEPING_KEYS = ("component", "block_lr_mul")
 
 _SDNQ_KINDS = {"adamw8bit", "adafactor", "came", "lion", "muon", "sinkgd"}
 

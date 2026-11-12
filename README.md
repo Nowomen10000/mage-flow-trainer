@@ -571,6 +571,34 @@ continuation starts a fresh plan and schedule. Texture/timestep curricula, OT,
 Self-Flow, gradient release, preservation, and decoded perceptual/adversarial
 experiments cannot be combined with staged resolutions in this first version.
 
+### MOSS block learning rates (experimental)
+
+Under **Preferences → Enable advanced experimental settings**, open
+**Experimental → Experimental MOSS block learning rates**. The range table sets
+training LR multipliers for PEFT LoRA or LyCORIS LoCon joint blocks **0–41**;
+both ends are inclusive. Defaults are disabled and ×1.0 throughout.
+
+```toml
+[block_lr]
+enabled = true
+ranges = [
+  {start = 0, end = 24, lr_mul = 0.75},
+  {start = 25, end = 32, lr_mul = 1.0},
+  {start = 33, end = 41, lr_mul = 1.0},
+]
+```
+
+For a separate comparison, change the last multiplier to `1.5`. These are
+experimental settings, not established quality presets. Unlisted blocks stay
+at ×1.0; ranges cannot overlap. Zero freezes the adapters in that range.
+Text-refiner adapters keep their existing component LR.
+
+Multipliers compose with component LRs, the LR scheduler, and resolution-stage
+or curriculum multipliers. They do not change rank, alpha, or inference weights.
+Logs report the ranges, and checkpoints retain the configuration for TOML
+recovery. Full-state resume requires the same effective block multipliers;
+use weights-only continuation to start a different LR plan.
+
 ## Timestep sampling and detail losses
 
 **Method → Flow Matching** shows a live timestep probability plot. Adjust the
