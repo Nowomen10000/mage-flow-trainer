@@ -1,0 +1,44 @@
+# MOSS-Image concept slider (port of ai-toolkit's Concept Slider). See docs/concept-sliders.md.
+# Dataset images of the target class only supply noisy latents; their captions are ignored.
+[dataset]
+path = "/path/to/images-of-the-target-class"
+source = "latents"
+resolution = 1024
+max_bucket_reso = 4096
+
+[train]
+model_family = "moss_image"
+model_path = "moss-image"
+run_name = "moss-image-slider"
+output_dir = "output"
+max_steps = 1000
+batch_size = 1
+gradient_checkpointing = true
+dtype = "bfloat16"
+cache_text_embeddings = true   # caches only the slider prompts, then releases the text encoder
+save_every_steps = 250
+
+[adapter]
+kind = "lora"
+rank = 16
+alpha = 16.0
+dtype = "bfloat16"
+
+[quant]
+preset = "balanced"   # frozen SDNQ INT8 storage + INT8 matmul; "standard" or "custom" also work
+
+[optimizer]
+lr = 1e-4
+
+[schedule]
+kind = "constant"
+warmup_steps = 10
+
+[slider]
+enabled = true
+target_class = "person"
+positive_prompt = "person who is happy"
+negative_prompt = "person who is sad"
+# anchor_class = ""          # optional concept to keep unchanged (two extra forwards per step)
+guidance_strength = 3.0
+anchor_strength = 1.0

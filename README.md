@@ -23,6 +23,9 @@ Formerly `mage-flow-trainer`. Existing TOMLs, caches, launch commands, and the
   per-tier batch sizes, or packed `torch_varlen` attention across resolutions.
 - **Training controls:** `torch.compile`, single-GPU training, Linux DDP,
   timestep-distribution previews, and optional HF/paired-texture losses.
+- **Concept sliders:** train an adapter that moves a concept toward a positive prompt at
+  +1 and a negative prompt at -1 (port of ai-toolkit's Concept Slider), including on
+  SDNQ-quantized bases. See the [concept slider guide](docs/concept-sliders.md).
 - **GUI workflow:** editable TOMLs, dataset subsets, live metrics, a training queue,
   and MOSS fused/separated QKV export.
 
@@ -808,6 +811,7 @@ are also separate from MOSS training.
 - [MOSS-Image model loading, training, validation, and export](docs/moss-image-experimental.md)
 - [Caption variation cache and invalidation](docs/caption-variation-cache.md)
 - [HF and paired texture losses](docs/detail-losses.md)
+- [Concept sliders](docs/concept-sliders.md)
 - [SDNQ update-rounding diagnosis](docs/sdnq-integer-update-rounding.md)
 - [General configuration and legacy Mage workflows](docs/training-guide.md)
 - [FLUX.3 integration and limitations](docs/flux3-experimental.md)
