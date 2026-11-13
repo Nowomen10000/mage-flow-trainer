@@ -19,6 +19,7 @@ from .flow import FlowConfig
 from .params import AdapterConfig, ComponentLRs
 from .block_lr import BlockLRConfig
 from .preserve import PreserveConfig
+from .slider import SliderConfig, validate_slider_options
 from .perceptual import PerceptualConfig
 from .eye_adversarial import EyeAdversarialConfig
 from .paired_texture import PairedTextureConfig
@@ -356,6 +357,7 @@ class Config:
     perceptual: PerceptualConfig = field(default_factory=PerceptualConfig)
     adversarial: EyeAdversarialConfig = field(default_factory=EyeAdversarialConfig)
     paired_texture: PairedTextureConfig = field(default_factory=PairedTextureConfig)
+    slider: SliderConfig = field(default_factory=SliderConfig)
     # `[[curriculum]]` -- an array of tables, so it is built by hand in `load_config` rather than
     # through `_SECTIONS`. Empty by default; an empty curriculum is exactly today's behaviour.
     curriculum: Curriculum = field(default_factory=Curriculum)
@@ -384,6 +386,7 @@ _SECTIONS = {
     "perceptual": PerceptualConfig,
     "adversarial": EyeAdversarialConfig,
     "paired_texture": PairedTextureConfig,
+    "slider": SliderConfig,
 }
 
 
@@ -408,6 +411,7 @@ def validate_model_options(cfg):
                                      or any(p.mode == 'texture' for p in cfg.curriculum.phases)):
         raise ValueError('Paired texture loss requires scalar timesteps and unmasked images; '
                          'dual timestep, Self-Flow and texture curriculum phases are unsupported')
+    validate_slider_options(cfg)
     if cfg.adversarial.enabled and (not cfg.perceptual.enabled
                                     or not cfg.perceptual.dedicated_low_noise
                                     or cfg.perceptual.weight != 0):

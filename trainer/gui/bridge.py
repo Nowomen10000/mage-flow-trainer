@@ -27,6 +27,7 @@ import toml
 from ..training.resolution_schedule import ResolutionSchedule
 from ..training.block_lr import BlockLRConfig
 from ..training.optimizer_specs import OPTIMIZERS, optimizer_defaults
+from ..training.slider import SliderConfig
 
 from ..data.caption import CaptionConfig
 from ..data.texture import TextureConfig
@@ -69,6 +70,7 @@ SECTIONS: dict[str, type] = {
     "perceptual": PerceptualConfig,
     "adversarial": EyeAdversarialConfig,
     "paired_texture": PairedTextureConfig,
+    "slider": SliderConfig,
 }
 
 # Fields that exist on a dataclass but are not config keys in their own section -- they are

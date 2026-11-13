@@ -304,6 +304,13 @@ class Trainer:
             self.accelerator.print(f'Self-Flow enabled: block 4 -> 8, EMA {sf.ema_dtype} on {sf.ema_device}, '
                                   f'FP32 AdaLN={sf.adaln_fp32}, storage {self.self_flow_ema.nbytes / 2**30:.2f} GiB')
 
+        # Built after `_prepare` so it scales the adapter layers the prepared (DDP/compiled) model
+        # actually runs, and encodes its prompts while the text encoder or text cache is ready.
+        self.slider = None
+        if cfg.slider.enabled:
+            from .slider import ConceptSlider
+            self.slider = ConceptSlider(cfg.slider, self)
+
         self.successful_updates = 0
         self.skipped_updates = 0
         self.consecutive_nonfinite = 0
@@ -609,14 +616,20 @@ class Trainer:
         import random
         from ..data.caption import build_caption
         from ..data.text_cache import TextEmbeddingCache, validate_static_captions
-        validate_static_captions(self.cfg)
         cfg = self.cfg
-        if cfg.train.caption_variations:
-            return self._build_variation_cache()
-        captions = sorted({build_caption(e.tags, e.nl, cfg.dataset.caption, random.Random(0))
-                           for e in self.dataset.entries})
-        if any(p.mode == "texture" for p in cfg.curriculum.phases):
-            captions = sorted(set(captions) | {cfg.dataset.texture.trigger})
+        if cfg.slider.enabled:
+            # Slider steps never read dataset captions, so only the slider's own prompts are
+            # encoded; the encoder is released before the transformer loads, as usual.
+            from .slider import ConceptSlider
+            captions = ConceptSlider.cached_prompts(cfg.slider)
+        else:
+            validate_static_captions(cfg)
+            if cfg.train.caption_variations:
+                return self._build_variation_cache()
+            captions = sorted({build_caption(e.tags, e.nl, cfg.dataset.caption, random.Random(0))
+                               for e in self.dataset.entries})
+            if any(p.mode == "texture" for p in cfg.curriculum.phases):
+                captions = sorted(set(captions) | {cfg.dataset.texture.trigger})
         if not captions:
             raise ValueError("No captions available for text embedding caching")
         components = load_components(cfg.train.model_path, self.dtype, **model_load_kwargs(cfg.train),
@@ -745,6 +758,8 @@ class Trainer:
         return torch.cat(out).float()
 
     def _step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if getattr(self, "slider", None) is not None:
+            return self._step_slider(batch)
         if self.self_flow_ema is not None:
             return self._step_self_flow(batch)
         if self.cfg.train.pack_resolutions:
@@ -803,6 +818,64 @@ class Trainer:
         # BF16 rounding here would condition on a different time than noising.
         dtype = torch.float32 if self.cfg.train.model_family == "moss_image" else self.dtype
         return timesteps.to(dtype)
+
+    def _step_slider(self, batch: dict) -> tuple[torch.Tensor, None]:
+        """Concept-slider step: the batch supplies noisy latents, the base model supplies targets.
+
+        Latents, noise, timesteps (curriculum t-range and dual timestep included) and the packed
+        layout are prepared exactly as in `_step` / `_step_packed`; every slider forward reuses
+        them, so the reference and signed predictions see identical inputs. See `slider.py` for
+        the objective and for why each signed pass gets its own backward.
+        """
+        from .slider import slider_step
+        if batch.get("mask") is not None:
+            raise ValueError("[slider] does not support masked batches")
+        device = self.accelerator.device
+        packed = self.cfg.train.pack_resolutions
+        if "pixels" in batch:
+            latents = ([self._encode_pixels(x.to(device, self.dtype)) for x in batch["pixels"]] if packed
+                       else self._encode_pixels(batch["pixels"].to(device, self.dtype)))
+        else:
+            latents = ([x.to(device, torch.float32) for x in batch["latents"]] if packed
+                       else batch["latents"].to(device, torch.float32))
+
+        stats: dict = {}
+        if packed:
+            prepared = [prepare_training_flow_batch(x, self.cfg.flow, **self.flow_rng.kwargs()) for x in latents]
+            noisy, times, _, second_times, token_masks = zip(*prepared)
+            hidden = [x.to(self.dtype) for x in noisy]
+            call = {"timestep": self._conditioning_timesteps(torch.cat(times))}
+            if self.cfg.flow.dual_timestep:
+                call.update(second_timestep=torch.cat(second_times).to(self.dtype), timestep_mask=token_masks)
+        else:
+            noisy, timesteps, _, second_t, token_mask = prepare_training_flow_batch(
+                latents, self.cfg.flow, stats=stats, t_range=self.phase.t_range if self.phase else None,
+                **self.flow_rng.kwargs(),
+            )
+            hidden = noisy.to(self.dtype)
+            call = {"timestep": self._conditioning_timesteps(timesteps), "return_dict": False}
+            if second_t is not None:
+                call.update(second_timestep=second_t.to(self.dtype), timestep_mask=token_mask)
+        self.last_stats = stats
+
+        samples = len(batch["captions"])
+        contexts = {}
+
+        def forward(role: str):
+            if role not in contexts:
+                contexts[role] = self.slider.context(role, samples)
+            return self.transformer(hidden_states=hidden, encoder_hidden_states=contexts[role], **call)[0]
+
+        acc = self.accelerator
+        loss, slider_stats = slider_step(
+            self.cfg.slider, self.slider.strength, forward,
+            # Same per-image scaling as the trainer's own backward (gradient release is refused).
+            early_backward=lambda term: acc.backward(term * samples),
+            # Early passes accumulate locally; the final pass's backward reduces once under DDP.
+            early_context=lambda: acc.no_sync(self.transformer),
+        )
+        self.last_stats.update(slider_stats)
+        return loss, None
 
     def _step_self_flow(self, batch):
         from .self_flow import forward_probe
@@ -1062,6 +1135,10 @@ class Trainer:
                     # Accelerate divides by accumulation_steps; DDP averages ranks.
                     # Restore an equal-per-image mean across the entire update below.
                     acc.backward(loss if cfg.optimizer.gradient_release else loss * samples)
+                    if getattr(self, "slider", None) is not None:
+                        # The last slider pass ran at strength -1 and its backward (which may
+                        # recompute checkpointed blocks) has now finished; back to +1.
+                        self.slider.after_backward()
                     update_ok = False
                     if acc.sync_gradients:
                         if not cfg.optimizer.gradient_release:
@@ -1239,6 +1316,12 @@ class Trainer:
             parts += f"  lpips {self.last_stats['lpips']:.4f}"
         if 'self_flow_alignment' in getattr(self, 'last_stats', {}):
             parts += f"  sf {self.last_stats['self_flow_alignment']:.4f}"
+        if 'slider_pos' in getattr(self, 'last_stats', {}):
+            # Weighted terms of `loss` for strength +1 / -1 (and the anchor, summed over both).
+            parts += (f"  pos {float(self.last_stats['slider_pos']):.4f}"
+                      f"  neg {float(self.last_stats['slider_neg']):.4f}")
+            if 'slider_anchor' in self.last_stats:
+                parts += f"  anchor {float(self.last_stats['slider_anchor']):.4f}"
         if hf_value is not None:
             parts += f" (mse {value - hf_value:.4f} + hf {hf_value:.4f})"
         if getattr(self, "last_grad_norm", None) is not None:
@@ -1347,6 +1430,8 @@ class Trainer:
                       "progressively worsening anatomy twice. You are re-testing an unproven fix; "
                       "compare against a single-GPU control at matched steps.")
         print(f"mode     {'LoRA/' + cfg.adapter.kind if cfg.is_lora else 'full finetune'}")
+        if getattr(self, "slider", None) is not None:
+            print(self.slider.describe())
         print(f"params   {trainable / 1e6:.2f}M trainable / {total / 1e6:.2f}M total")
         if self.param_report is not None:
             print(self.param_report.summary())

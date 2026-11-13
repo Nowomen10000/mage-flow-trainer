@@ -94,6 +94,9 @@ _RULES = {
         'weight', 'discriminator_lr', 'warm_start')},
     **{f'perceptual.{option}': (lambda c: bool(c.get('perceptual.enabled'))) for option in (
         'weight', 'max_t', 'every', 'cache_dir', 'eye_manifest', 'dedicated_low_noise')},
+    **{f'slider.{option}': (lambda c: bool(c.get('slider.enabled'))) for option in (
+        'target_class', 'positive_prompt', 'negative_prompt', 'anchor_class',
+        'guidance_strength', 'anchor_strength')},
     **{f'self_flow.{option}': (lambda c: bool(c.get('self_flow.enabled'))) for option in (
         'ema_dtype', 'ema_device', 'adaln_fp32', 'stochastic_rounding', 'decay', 'weight')},
     # Measured: under `uniform`, scale 0.5/1.0/2.0 give byte-identical distributions.

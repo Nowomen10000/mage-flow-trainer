@@ -5,6 +5,9 @@ from torch.nn.utils.rnn import pad_sequence
 
 
 def validate_static_captions(cfg):
+    if getattr(getattr(cfg, "slider", None), "enabled", False):
+        # Slider steps never read dataset captions; only the slider's fixed prompts are cached.
+        return
     caption = cfg.dataset.caption
     changing = [
         name
