@@ -653,7 +653,8 @@ def load_config(path: str | Path) -> Config:
         )
     if cfg.train.caption_variations < 0:
         raise ValueError("caption_variations must be >= 0")
-    if cfg.train.caption_variations and not cfg.train.cache_text_embeddings:
+    if cfg.train.caption_variations and not cfg.train.cache_text_embeddings and not cfg.slider.enabled:
+        # A slider never builds a variation cache, so the setting is simply unused there.
         raise ValueError("caption_variations requires cache_text_embeddings=true")
     if cfg.train.cache_text_embeddings:
         from ..data.text_cache import validate_static_captions

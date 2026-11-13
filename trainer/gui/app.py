@@ -199,6 +199,12 @@ def _has_texture_phase(c: dict) -> bool:
     return any(p.get("mode") == "texture" for p in (c.get("curriculum") or []))
 
 
+def _captions_optional(c: dict) -> bool:
+    """Cache images that have no .txt caption. Mirrors `cache_latents.captions_optional`: slider
+    steps never read dataset captions, so a slider dataset needs none."""
+    return bool(c.get("dataset.allow_missing_captions") or c.get("slider.enabled"))
+
+
 # Derived from the schema rather than listed, so adding a texture key cannot leave it ungated --
 # which is exactly what happened when the oversize cascade added four of them at once.
 for _tex in (k for k in SPEC if k.startswith("dataset.texture.")):
@@ -1458,6 +1464,7 @@ class TrainingGUI(QtWidgets.QWidget):
             bucket_reso_steps=flat.get("dataset.bucket_reso_steps") or 64,
             upscale=not flat.get("dataset.bucket_no_upscale", True),
             multires_training=bool(flat.get("dataset.multires_training")),
+            allow_missing_captions=_captions_optional(flat),
             gpus=self.gpu_arg(),
         )) for pth in self._dataset_paths(flat)]
 
@@ -1572,6 +1579,7 @@ class TrainingGUI(QtWidgets.QWidget):
             bucket_reso_steps=c.get("dataset.bucket_reso_steps") or 64,
             upscale=not c.get("dataset.bucket_no_upscale", True),
             multires_training=bool(c.get("dataset.multires_training")),
+            allow_missing_captions=_captions_optional(c),
             dry_run=dry, gpus=self.gpu_arg(),
         ) for p in paths], "Caching")
 

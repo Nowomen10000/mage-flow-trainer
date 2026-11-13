@@ -300,6 +300,13 @@ SPEC: dict[str, Spec] = {
         "cost against cached latents: +0.3-0.4GB and +16% step time, with no reduction in the "
         "batch size that fits.",
         lambda: F.ChoiceEditor(["auto", "images", "latents", "encode"])),
+    "dataset.allow_missing_captions": _spec(
+        "Allow missing captions",
+        "Cache and train images that have no .txt caption; they train with an empty caption (the "
+        "unconditional prompt). Off: latent caching stops and lists them, since a missing caption "
+        "is usually a mistake.\n\nAlways on for Concept Slider training, which ignores dataset "
+        "captions.",
+        lambda: F.BoolEditor("Train images without a .txt caption"), inline_label=True),
     "dataset.resolution": _spec(
         "Resolution (single tier)",
         "An AREA budget, not a side length: 1024 means ~1024x1024 worth of pixels, so 1920x1080 "
@@ -800,7 +807,8 @@ SPEC: dict[str, Spec] = {
 LAYOUT: list[tuple[str, list[tuple[str, list[str]]]]] = [
     ("Dataset", [
         ("Dataset Source", [
-            "dataset.path", "dataset.source", "dataset.cache_validation", "dataset.num_repeats", "dataset.subsets",
+            "dataset.path", "dataset.source", "dataset.cache_validation", "dataset.allow_missing_captions",
+            "dataset.num_repeats", "dataset.subsets",
         ]),
         ("Resolution", [
             "dataset.resolution", "dataset.resolutions", "dataset.tier_collapse",

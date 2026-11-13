@@ -133,11 +133,9 @@ def validate_slider_options(cfg) -> None:
             "[slider] runs one backward per slider end; optimizer.gradient_release would update "
             "the weights between them. Disable gradient_release"
         )
-    if cfg.train.caption_variations:
-        raise ValueError(
-            "[slider] ignores dataset captions, so train.caption_variations has nothing to do; "
-            "set it to 0"
-        )
+    # Dataset caption options (caption modes, shuffling, train.caption_variations) are simply
+    # unused: slider steps never read dataset captions and the text cache holds only the slider
+    # prompts, so leaving them set in a reused config is harmless and is not refused.
     unsupported = [
         name for name, on in (
             ("preserve", cfg.preserve.enabled),

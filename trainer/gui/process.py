@@ -106,6 +106,7 @@ def cache_launch(
     flux2_vae: bool = False,
     model_family: str = "auto",
     cache_validation: str = "warn",
+    allow_missing_captions: bool = False,
 ) -> Launch:
     argv = [_python(), "-u", "-m", "trainer.tools.cache_latents", "cache", dataset_path,
             "--model-path", model_path,
@@ -130,6 +131,8 @@ def cache_launch(
         argv.append("--overwrite")
     if dry_run:
         argv.append("--dry-run")
+    if allow_missing_captions:
+        argv.append("--allow-missing-captions")
     tiers = "/".join(str(r) for r in resolutions)
     return Launch(argv, f"cache latents ({tiers})", is_training=False,
                   env={"CUDA_VISIBLE_DEVICES": gpus} if gpus else {})

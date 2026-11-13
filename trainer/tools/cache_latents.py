@@ -35,6 +35,12 @@ def _images(root: Path) -> list[Path]:
     )
 
 
+def captions_optional(cfg) -> bool:
+    """Whether this config trains images that have no `.txt` caption. Slider steps never read
+    dataset captions, so a slider dataset needs none."""
+    return bool(cfg.dataset.allow_missing_captions or cfg.slider.enabled)
+
+
 def config_cache_commands(args):
     """Use the config's exact subset paths and bucket/VAE settings."""
     from ..training.config import load_config
@@ -59,9 +65,11 @@ def config_cache_commands(args):
             command.append("--multires")
         if args.devices:
             command += ["--devices", args.devices]
-        for flag in ("overwrite", "dry_run", "allow_missing_captions"):
+        for flag in ("overwrite", "dry_run"):
             if getattr(args, flag):
                 command.append("--" + flag.replace("_", "-"))
+        if args.allow_missing_captions or captions_optional(cfg):
+            command.append("--allow-missing-captions")
         commands.append(command)
     return commands
 
@@ -103,6 +111,11 @@ def cmd_cache(args) -> int:
 
     files = _images(root)
     if not files:
+        if any(root.glob(f"*{CACHE_SUFFIX}")):
+            # Latents-only folder (images deleted after caching). Nothing to encode, and failing
+            # here would stop the GUI's cache-before-train step for a dataset that can train.
+            print(f"no images in {root}, only cached latents: nothing to cache")
+            return 0
         print(f"no images in {root}")
         return 1
 
@@ -161,9 +174,15 @@ def cmd_cache(args) -> int:
     missing_caption = [p.name for p in files if not p.with_suffix(".txt").exists()]
     if missing_caption and not args.allow_missing_captions:
         print(f"\n{len(missing_caption)} images have no .txt caption "
-              f"(e.g. {missing_caption[:3]}). They would be unusable for training.")
-        print("Re-run with --allow-missing-captions to cache them anyway.")
+              f"(e.g. {missing_caption[:3]}). Stopping, since a missing caption is usually a "
+              f"mistake.")
+        print("Re-run with --allow-missing-captions (GUI: Dataset > Allow missing captions, or "
+              "dataset.allow_missing_captions = true) to cache them anyway; they then train with "
+              "an empty caption.")
         return 1
+    if missing_caption:
+        print(f"\n{len(missing_caption)} images have no .txt caption; caching them anyway "
+              f"(--allow-missing-captions).")
 
     if args.dry_run:
         print("\n--dry-run: nothing written")
@@ -325,7 +344,8 @@ def main() -> int:
     cc.add_argument("--devices", default="", help="Physical GPU IDs, e.g. 0,1; batch size is per GPU")
     cc.add_argument("--overwrite", action="store_true")
     cc.add_argument("--dry-run", action="store_true")
-    cc.add_argument("--allow-missing-captions", action="store_true")
+    cc.add_argument("--allow-missing-captions", action="store_true",
+                    help="cache images without a .txt caption (implied by dataset.allow_missing_captions or [slider])")
     cc.set_defaults(func=cmd_cache_config)
 
     c = sub.add_parser("cache", help="encode images to cached latents")
@@ -345,7 +365,8 @@ def main() -> int:
     c.add_argument("--upscale", action="store_true", help="allow upscaling small images")
     c.add_argument("--multires", action="store_true", help="area tie-break between buckets")
     c.add_argument("--overwrite", action="store_true")
-    c.add_argument("--allow-missing-captions", action="store_true")
+    c.add_argument("--allow-missing-captions", action="store_true",
+                   help="cache images without a .txt caption; they train with an empty caption")
     c.add_argument("--dry-run", action="store_true",
                    help="report the bucket plan and cache size, write nothing")
     c.add_argument("--device", default="cuda")

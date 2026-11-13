@@ -72,9 +72,21 @@ def test_config_defaults_and_prompt_roles(tmp_path):
     assert cfg.slider.prompts()["anchor"] == "a tree"
 
 
+@pytest.mark.parametrize("cache", [False, True])
+def test_config_accepts_unused_caption_options(tmp_path, cache):
+    # A reused normal config keeps its caption settings; a slider ignores them rather than refusing.
+    data = _config_data(tmp_path)
+    data["train"].update(caption_variations=2, cache_text_embeddings=cache)
+    data["dataset"]["caption"] = {"shuffle_tags": True}
+    assert _load(tmp_path, data).train.caption_variations == 2
+    if not cache:
+        data["slider"]["enabled"] = False
+        with pytest.raises(ValueError, match="cache_text_embeddings"):
+            _load(tmp_path, data)
+
+
 @pytest.mark.parametrize("incompatible", [
-    "identical", "full_finetune", "dora", "gradient_release",
-    "caption_variations", "hf_scale", "preserve",
+    "identical", "full_finetune", "dora", "gradient_release", "hf_scale", "preserve",
 ])
 def test_config_rejects_incompatible_options(tmp_path, incompatible):
     data = _config_data(tmp_path)
@@ -87,8 +99,6 @@ def test_config_rejects_incompatible_options(tmp_path, incompatible):
     elif incompatible == "gradient_release":
         # Both settings are needed to reach slider validation rather than optimizer validation.
         data["optimizer"] = {"kind": "optimi_adamw", "gradient_release": True, "max_grad_norm": 0}
-    elif incompatible == "caption_variations":
-        data["train"].update(caption_variations=2, cache_text_embeddings=True)
     elif incompatible == "hf_scale":
         data["flow"] = {"hf_scale": 0.1}
     else:
@@ -622,7 +632,8 @@ def test_text_cache_build_uses_only_unique_slider_prompts(tmp_path, monkeypatch,
     from trainer.data.text_cache import validate_static_captions
     data = _config_data(tmp_path)
     data["slider"]["anchor_class"] = anchor
-    data["train"].update(cache_text_embeddings=True, text_cache_batch_size=2)
+    # Caption options left over from a normal config are accepted and unused, variations included.
+    data["train"].update(cache_text_embeddings=True, text_cache_batch_size=2, caption_variations=2)
     data["dataset"]["caption"] = {"shuffle_tags": True}
     trainer = Trainer.__new__(Trainer)
     trainer.cfg = _load(tmp_path, data)

@@ -35,7 +35,9 @@ In the GUI the same settings are under **Method → Concept Slider**. A full exa
 
 **Dataset.** Images only supply realistic noisy latents, so use a few dozen to a few hundred
 images of the target class. Their captions are ignored: caption files, caption modes, shuffling
-and caption variations have no effect in slider mode.
+and caption variations have no effect in slider mode. Images need no `.txt` files at all: slider
+mode implies `dataset.allow_missing_captions`, so latent caching (including the GUI's cache step
+before training) and latents-only datasets accept uncaptioned images.
 
 ## Settings
 
@@ -95,15 +97,19 @@ reduced once per step.
 ## Compatibility
 
 - **Adapters:** PEFT LoRA and LoKr, LyCORIS LoCon and LoKr (bypass or not). Strength scales only
-  the adapter branch (PEFT `scaling`, LyCORIS `multiplier`); it is never merged into the base.
+  the adapter branch (PEFT `scaling`, LyCORIS `multiplier`); it is never merged into the stored
+  base. Keep LyCORIS in its default bypass mode: weight mode adds `±delta` to BF16 weights on the
+  fly, so a small delta rounds differently at +1 and -1.
 - **SDNQ and other quantized bases:** frozen SDNQ storage, the MOSS `balanced`/`fast` frozen INT8
   matmul presets and ConvRot all keep their base layers untouched; slider mode changes nothing
   about how they quantize, store or multiply.
 - **Not supported**, refused at load: full finetuning (`adapter.kind = "none"`), DoRA (its
   magnitude normalisation makes strength 0 not "off" and -1 not the mirror of +1),
   `optimizer.gradient_release` (it would update weights between the two slider ends),
-  `train.caption_variations`, concept preservation, Self-Flow, decoded perceptual and eye
-  adversarial losses, paired texture loss, HF loss, RTI and texture curriculum phases.
+  concept preservation, Self-Flow, decoded perceptual and eye adversarial losses, paired texture
+  loss, HF loss, RTI and texture curriculum phases.
+- **Ignored**, accepted so a normal config can be reused: caption files and every
+  `[dataset.caption]` option, and `train.caption_variations` (no variation cache is built).
 - Packed resolutions, multi-resolution buckets, staged resolution training, dual timestep
   noising, gradient accumulation and Linux DDP work as usual.
 

@@ -115,6 +115,10 @@ class DatasetConfig:
     # resident in VRAM, to reproduce a tensor that never changes.
     cache_validation: str = "warn"  # warn permits legacy caches; strict requires provenance; off bypasses
     source: str = "auto"  # "images" | "latents" | "encode" | "auto"
+    # Images without `<stem>.txt` train with an empty caption (the unconditional prompt). Off by
+    # default because a missing caption is usually a mistake: latent caching then stops and lists
+    # them, and latents-only mode refuses them. Slider training ignores captions, so it implies this.
+    allow_missing_captions: bool = False
 
     # Only read when a curriculum phase has `mode = "texture"`. Nested under [dataset.texture].
     texture: TextureConfig = field(default_factory=TextureConfig)
@@ -366,7 +370,8 @@ class MageFlowDataset(Dataset):
 
         for stem, variants in sorted(cached.items()):
             caption_path = root / f"{stem}.txt"
-            if not caption_path.exists():
+            has_caption = caption_path.exists()
+            if not has_caption and not self.config.allow_missing_captions:
                 skipped.append(stem)
                 continue
 
@@ -412,7 +417,7 @@ class MageFlowDataset(Dataset):
                     missing.append(f"{stem} @ {b[0]}x{b[1]}")
 
             nl_path = root / f"{stem}_nl.txt"
-            tags = caption_path.read_text(encoding="utf-8").strip()
+            tags = caption_path.read_text(encoding="utf-8").strip() if has_caption else ""
             nl = nl_path.read_text(encoding="utf-8").strip() if nl_path.exists() else None
             for tier, bucket in wanted_pairs:
                 p = by_bucket.get(bucket)
@@ -447,11 +452,15 @@ class MageFlowDataset(Dataset):
                 stacklevel=3,
             )
         if not self.entries:
-            raise ValueError(f"{root}: found {len(cached)} cached latents but none had a .txt caption")
+            raise ValueError(
+                f"{root}: found {len(cached)} cached latents but none had a .txt caption. Set "
+                f"dataset.allow_missing_captions = true to train them with an empty caption."
+            )
         if skipped:
             raise RuntimeError(
                 f"{len(skipped)} cached latents have no usable .txt caption or bucket "
-                f"(e.g. {skipped[:5]}). They would be silently dropped; fix or remove them."
+                f"(e.g. {skipped[:5]}). They would be silently dropped; fix or remove them, or set "
+                f"dataset.allow_missing_captions = true to train them with an empty caption."
             )
 
         self.tier_report = TierReport(

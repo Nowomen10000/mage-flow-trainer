@@ -330,6 +330,9 @@ class Trainer:
         cfg = self.cfg
         cfg.resolution_schedule.validate(cfg)
         dataset_cfg = replace(cfg.dataset, tier_collapse='repeat') if cfg.resolution_schedule.enabled else cfg.dataset
+        if cfg.slider.enabled and not dataset_cfg.allow_missing_captions:
+            # Slider steps never read dataset captions, so uncaptioned latents are not a mistake.
+            dataset_cfg = replace(dataset_cfg, allow_missing_captions=True)
         self.dataset = MageFlowDataset(dataset_cfg, caption_seed=cfg.train.seed)
         from ..data.cache_provenance import validate_dataset_caches
         validate_dataset_caches(self.dataset, cfg.train, cfg.dataset.cache_validation)
@@ -1134,11 +1137,13 @@ class Trainer:
                         raise FloatingPointError("Nonfinite loss before gradient-release backward")
                     # Accelerate divides by accumulation_steps; DDP averages ranks.
                     # Restore an equal-per-image mean across the entire update below.
-                    acc.backward(loss if cfg.optimizer.gradient_release else loss * samples)
-                    if getattr(self, "slider", None) is not None:
-                        # The last slider pass ran at strength -1 and its backward (which may
-                        # recompute checkpointed blocks) has now finished; back to +1.
-                        self.slider.after_backward()
+                    try:
+                        acc.backward(loss if cfg.optimizer.gradient_release else loss * samples)
+                    finally:
+                        if getattr(self, "slider", None) is not None:
+                            # The last slider pass ran at strength -1 and its backward (which may
+                            # recompute checkpointed blocks) has now finished, or raised; back to +1.
+                            self.slider.after_backward()
                     update_ok = False
                     if acc.sync_gradients:
                         if not cfg.optimizer.gradient_release:
